@@ -60,8 +60,12 @@ the old Takeout files and the new on-device export together.
 The points that count (see "Count as walked") mark a 20 m grid of "been here" cells within the
 reveal radius. Each street in view is sampled every 10 m and split into runs of covered and
 uncovered samples; a park is visited when any covered cell lies inside it. Streets and parks come
-from the Overpass API for the area on screen, once it is smaller than about 20 km², and are cached
-as you pan.
+from the Overpass API in fixed zoom-13 map tiles (about 3 km square) that are cached for the
+session, two requests at a time, and drawn for half a screen beyond every edge so panning never
+shows a blank margin. Zoomed out past a dozen tiles, the streets switch off and the fog stays.
+
+The fog is drawn from the walked cells thinned to the current zoom (one point per ~2.5 screen
+pixels), so zooming out over years of history stays cheap.
 
 ## How places are scored
 
@@ -94,6 +98,7 @@ js/score.js     spatial grid index, familiarity, distance, heat aggregation
 js/coverage.js  "been here" grid, street sampling, park point-in-polygon
 js/places.js    Overpass queries (places, streets, parks) with endpoint fallback
 js/canvas-layer.js  one-canvas Leaflet layer used for the fog and the coverage
+js/tiles.js     web-mercator tile maths for the street cache
 js/storage.js   IndexedDB history store (packed typed arrays) and localStorage settings
 js/demo.js      synthetic history + places for "Try with demo data"
 js/app.js       UI and Leaflet wiring

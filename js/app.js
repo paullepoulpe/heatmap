@@ -5,6 +5,7 @@ import { CoverageGrid, computeCoverage, pointsForMode } from './coverage.js';
 import { createCanvasLayer, metersPerPixel } from './canvas-layer.js';
 import { saveHistory, loadHistory, clearHistory, loadSettings, saveSettings } from './storage.js';
 import { makeDemoTimeline, makeDemoPlaces, makeDemoArea } from './demo.js';
+import { tilesForBox } from './tiles.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -61,13 +62,18 @@ const state = {
   travel: settings.travel || 'foot',
   reveal: settings.reveal || 40,
   layers: { fog: true, streets: true, parks: true, heat: false, ...(settings.layers || {}) },
-  walked: null, // { agg, index: SpatialIndex, grid: CoverageGrid }
-  area: { ways: new Map(), areas: new Map(), boxes: [] },
+  walked: null, // { agg, byZoom: Map, grid: CoverageGrid }
+  area: newAreaCache(),
   coverage: null,
-  fetchingArea: false,
 };
 
-const MAX_AREA_KM2 = 20;
+const TILE_Z = 13; // ~3.2 km square at mid latitudes: a few thousand ways per tile in a dense city
+const MAX_TILES = 12; // beyond this many tiles under the canvas we ask to zoom in
+const MAX_INFLIGHT = 2; // public Overpass servers allow few parallel requests per client
+
+function newAreaCache() {
+  return { ways: new Map(), areas: new Map(), tiles: new Map(), runs: new Map(), inflight: 0, queue: [] };
+}
 const LEVEL_COLORS = { unexplored: '#38bdf8', passed: '#8b97a8', familiar: '#f59e0b' };
 
 // ---------- Panels ----------
@@ -120,18 +126,22 @@ const fogLayer = createCanvasLayer((ctx, v) => {
   ctx.fillStyle = 'rgba(15, 18, 22, 0.55)';
   ctx.fillRect(0, 0, v.width, v.height);
   const b = v.bounds;
-  const pts = state.walked.index.inBounds({ south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() });
   const mpp = metersPerPixel(map.getCenter().lat, v.zoom);
-  const r = Math.max(2.5, state.reveal / mpp);
+  const pts = walkedPointsForZoom(v.zoom, mpp).filter(
+    (p) => p.lat >= b.getSouth() && p.lat <= b.getNorth() && p.lng >= b.getWest() && p.lng <= b.getEast(),
+  );
+  const r = Math.max(2, state.reveal / mpp);
   ctx.globalCompositeOperation = 'destination-out';
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
-  ctx.beginPath();
-  for (const p of pts) {
-    const q = v.project(p.lat, p.lng);
-    ctx.moveTo(q.x + r * 1.7, q.y);
-    ctx.arc(q.x, q.y, r * 1.7, 0, Math.PI * 2);
+  if (r >= 3) {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.beginPath();
+    for (const p of pts) {
+      const q = v.project(p.lat, p.lng);
+      ctx.moveTo(q.x + r * 1.7, q.y);
+      ctx.arc(q.x, q.y, r * 1.7, 0, Math.PI * 2);
+    }
+    ctx.fill();
   }
-  ctx.fill();
   ctx.fillStyle = 'rgba(0, 0, 0, 1)';
   ctx.beginPath();
   for (const p of pts) {
@@ -142,6 +152,20 @@ const fogLayer = createCanvasLayer((ctx, v) => {
   ctx.fill();
   ctx.globalCompositeOperation = 'source-over';
 }, { className: 'fog-canvas' });
+
+/**
+ * Walked points thinned to the current zoom: one point per ~2.5 screen pixels,
+ * so the fog never draws more circles than the screen has room for.
+ */
+function walkedPointsForZoom(zoom, mpp) {
+  const cell = Math.max(20, Math.round(mpp * 2.5));
+  let list = state.walked.byZoom.get(cell);
+  if (!list) {
+    list = cell === 20 ? state.walked.agg : aggregateForHeat(state.walked.agg, cell);
+    state.walked.byZoom.set(cell, list);
+  }
+  return list;
+}
 
 const coverageLayer = createCanvasLayer((ctx, v) => {
   const cov = state.coverage;
@@ -288,7 +312,7 @@ function applyData(data, { demo = false, fit = false } = {}) {
   setCenter(L.latLng(hot.lat, hot.lng));
   if (fit || !settings.view) map.setView([hot.lat, hot.lng], 15);
 
-  state.area = { ways: new Map(), areas: new Map(), boxes: [] };
+  state.area = newAreaCache();
   state.coverage = null;
   state.places = [];
   placesLayer.clearLayers();
@@ -379,7 +403,8 @@ function rebuildWalked() {
   if (!state.data) return;
   const pts = pointsForMode(state.data.points, state.travel);
   const agg = aggregateForHeat(pts, 20);
-  state.walked = { agg, index: new SpatialIndex(agg, 500), grid: new CoverageGrid(agg, { cellMeters: 20, reach: Math.max(25, state.reveal) }) };
+  state.walked = { agg, byZoom: new Map(), grid: new CoverageGrid(agg, { cellMeters: 20, reach: Math.max(25, state.reveal) }) };
+  state.area.runs.clear();
   fogLayer.redraw();
   refreshCoverage();
 }
@@ -389,14 +414,6 @@ function viewBox(pad = 0) {
   return { south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() };
 }
 
-function boxAreaKm2(b) {
-  const h = haversine(b.south, b.west, b.north, b.west);
-  const w = haversine(b.south, b.west, b.south, b.east);
-  return (h * w) / 1e6;
-}
-
-const contains = (outer, inner) =>
-  inner.south >= outer.south && inner.north <= outer.north && inner.west >= outer.west && inner.east <= outer.east;
 const intersects = (a, b) => !(a.east < b.west || a.west > b.east || a.north < b.south || a.south > b.north);
 
 function boxOfCoords(coords) {
@@ -416,10 +433,17 @@ function boxOfCoords(coords) {
 let coverageTimer = null;
 function scheduleCoverage() {
   clearTimeout(coverageTimer);
-  coverageTimer = setTimeout(refreshCoverage, 500);
+  coverageTimer = setTimeout(refreshCoverage, 300);
 }
 
-async function refreshCoverage() {
+function setPill(text, html = false) {
+  els.coveragePill.hidden = false;
+  if (html) els.coveragePill.innerHTML = text;
+  else els.coveragePill.textContent = text;
+}
+
+/** Make sure every tile under the padded canvas is loaded, then draw. */
+function refreshCoverage() {
   if (!state.data || !state.walked) return;
   if (!state.layers.streets && !state.layers.parks) {
     els.coverageStatus.textContent = '';
@@ -427,65 +451,132 @@ async function refreshCoverage() {
     els.coveragePill.hidden = true;
     return;
   }
-  const view = viewBox();
-  if (boxAreaKm2(view) > MAX_AREA_KM2) {
+  const drawBox = viewBox(0.5); // matches the canvas padding
+  const tiles = tilesForBox(drawBox, TILE_Z);
+  if (tiles.length > MAX_TILES) {
     state.coverage = null;
     coverageLayer.redraw();
     setStatus(els.coverageStatus, 'Zoom in to see which streets and parks you have covered.');
     els.coverageStats.hidden = true;
-    els.coveragePill.hidden = false;
-    els.coveragePill.textContent = 'Zoom in for streets';
+    setPill('Zoom in for streets');
     return;
   }
-  const fetchBox = viewBox(0.25);
-  if (!state.area.boxes.some((b) => contains(b, view))) {
-    if (state.fetchingArea) return;
-    state.fetchingArea = true;
-    setStatus(els.coverageStatus, 'Loading streets and parks from OpenStreetMap…');
-    els.coveragePill.hidden = false;
-    els.coveragePill.textContent = 'Loading streets…';
-    try {
-      const { ways, areas } = state.demo ? parseAreaElements(makeDemoArea(fetchBox).elements) : await fetchArea(fetchBox);
-      for (const w of ways) state.area.ways.set(w.id, { ...w, box: boxOfCoords(w.coords) });
-      for (const a of areas) state.area.areas.set(a.id, { ...a, box: boxOfCoords(a.rings.flat()) });
-      state.area.boxes.push(fetchBox);
-    } catch (err) {
-      setStatus(els.coverageStatus, `Could not load streets: ${err.message}. Pan a little to retry.`, true);
-      els.coveragePill.textContent = 'Streets failed to load';
-      state.fetchingArea = false;
-      return;
-    }
-    state.fetchingArea = false;
+  const missing = tiles.filter((t) => {
+    const st = state.area.tiles.get(t.key);
+    return !st || (st.status === 'error' && Date.now() - st.at > 15000);
+  });
+  for (const t of missing) {
+    state.area.tiles.set(t.key, { status: 'queued', at: Date.now() });
+    state.area.queue.push(t);
   }
-  drawCoverageForView(view);
+  pumpTileQueue();
+  drawCoverageForView();
 }
 
-function drawCoverageForView(view) {
-  const ways = [];
-  for (const w of state.area.ways.values()) if (intersects(w.box, view)) ways.push(w);
-  const areas = [];
-  for (const a of state.area.areas.values()) if (intersects(a.box, view)) areas.push(a);
-  const cov = computeCoverage(ways, areas, state.walked.grid);
-  state.coverage = cov;
+function pumpTileQueue() {
+  const area = state.area;
+  while (area.inflight < MAX_INFLIGHT && area.queue.length) {
+    const t = area.queue.shift();
+    area.inflight += 1;
+    area.tiles.set(t.key, { status: 'loading', at: Date.now() });
+    loadTile(t, area).finally(() => {
+      area.inflight -= 1;
+      if (state.area === area) {
+        drawCoverageForView();
+        pumpTileQueue();
+      }
+    });
+  }
+}
+
+async function loadTile(t, area) {
+  try {
+    const { ways, areas } = state.demo
+      ? parseAreaElements(makeDemoArea(t.bounds, t.x * 31 + t.y).elements)
+      : await fetchArea(t.bounds);
+    if (state.area !== area) return; // history was replaced meanwhile
+    for (const w of ways) if (!area.ways.has(w.id)) area.ways.set(w.id, { ...w, box: boxOfCoords(w.coords) });
+    for (const a of areas) if (!area.areas.has(a.id)) area.areas.set(a.id, { ...a, box: boxOfCoords(a.rings.flat()) });
+    area.tiles.set(t.key, { status: 'done', at: Date.now() });
+  } catch (err) {
+    area.tiles.set(t.key, { status: 'error', at: Date.now(), message: err.message });
+  }
+}
+
+function runsFor(way) {
+  let runs = state.area.runs.get(way.id);
+  if (!runs) {
+    runs = computeCoverage([way], [], state.walked.grid).streets[0].runs;
+    state.area.runs.set(way.id, runs);
+  }
+  return runs;
+}
+
+/** Draw everything under the padded canvas; report stats for what is actually visible. */
+function drawCoverageForView() {
+  if (!state.walked) return;
+  const drawBox = viewBox(0.5);
+  const view = viewBox();
+  const streets = [];
+  const parks = [];
+  let walked = 0;
+  let total = 0;
+  let parksInView = 0;
+  let visitedInView = 0;
+  for (const w of state.area.ways.values()) {
+    if (!intersects(w.box, drawBox)) continue;
+    const runs = runsFor(w);
+    streets.push({ ...w, runs });
+    if (intersects(w.box, view)) {
+      for (const r of runs) {
+        total += r.length;
+        if (r.covered) walked += r.length;
+      }
+    }
+  }
+  for (const a of state.area.areas.values()) {
+    if (!intersects(a.box, drawBox)) continue;
+    let entry = state.area.runs.get(a.id);
+    if (!entry) {
+      entry = computeCoverage([], [a], state.walked.grid).parks[0];
+      state.area.runs.set(a.id, entry);
+    }
+    parks.push(entry);
+    if (intersects(a.box, view)) {
+      parksInView += 1;
+      if (entry.visited) visitedInView += 1;
+    }
+  }
+  state.coverage = { streets, parks };
   coverageLayer.redraw();
-  const s = cov.stats;
-  const pct = s.totalMeters ? Math.round((100 * s.walkedMeters) / s.totalMeters) : 0;
+
+  const tiles = tilesForBox(view, TILE_Z).map((t) => state.area.tiles.get(t.key));
+  const pending = tiles.filter((st) => !st || st.status === 'queued' || st.status === 'loading').length;
+  const failed = tiles.filter((st) => st && st.status === 'error');
+  const pct = total ? Math.round((100 * walked) / total) : 0;
   const km = (m) => (m / 1000).toFixed(1);
   const rows = [];
   const pill = [];
   if (state.layers.streets) {
-    rows.push(['Streets walked', `${pct}%`], ['Distance', `${km(s.walkedMeters)} of ${km(s.totalMeters)} km`]);
+    rows.push(['Streets walked', `${pct}%`], ['Distance', `${km(walked)} of ${km(total)} km`]);
     pill.push(`<b>${pct}%</b> of streets walked`);
   }
   if (state.layers.parks) {
-    rows.push(['Parks visited', `${s.visitedParks} of ${s.parks}`]);
-    pill.push(`<b>${s.visitedParks}</b>/${s.parks} parks`);
+    rows.push(['Parks visited', `${visitedInView} of ${parksInView}`]);
+    pill.push(`<b>${visitedInView}</b>/${parksInView} parks`);
   }
   els.coverageStats.innerHTML = rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('');
   els.coverageStats.hidden = false;
-  els.coveragePill.innerHTML = pill.join('<span class="sep">·</span>');
-  els.coveragePill.hidden = false;
-  setStatus(els.coverageStatus, ways.length || areas.length ? 'In the current view:' : 'No mapped streets or parks in view.');
+  if (pending) {
+    setPill(`Loading streets… ${pill.join('<span class="sep">·</span>')}`, true);
+    setStatus(els.coverageStatus, `Loading streets and parks from OpenStreetMap (${pending} tile${pending > 1 ? 's' : ''} left)…`);
+  } else if (failed.length) {
+    setPill(pill.join('<span class="sep">·</span>'), true);
+    setStatus(els.coverageStatus, `Some streets failed to load (${failed[0].message}). They retry as you pan.`, true);
+  } else {
+    setPill(pill.join('<span class="sep">·</span>'), true);
+    setStatus(els.coverageStatus, streets.length || parks.length ? 'In the current view:' : 'No mapped streets or parks in view.');
+  }
 }
 
 // ---------- Layer controls ----------
@@ -662,4 +753,4 @@ function escapeHtml(s) {
 // ---------- Boot ----------
 restoreSaved();
 
-window.__unexplored = { state, map, loadDocuments, haversine, refreshCoverage, openPanel };
+window.__unexplored = { state, map, loadDocuments, haversine, refreshCoverage, openPanel, fogLayer, coverageLayer };
