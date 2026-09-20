@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Unexplored</title>
+  <meta name="description" content="A heatmap of everywhere you have been, and the places nearby you have not." />
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <aside class="panel" id="panel">
+    <header class="panel__head">
+      <h1>Unexplored</h1>
+      <p class="muted">Your Google Timeline as a heatmap, and the places nearby you have never been.</p>
+    </header>
+
+    <section class="card" id="import-card">
+      <h2>1. Load your history</h2>
+      <label class="drop" id="drop" for="file-input">
+        <input id="file-input" type="file" accept=".json,application/json" multiple hidden />
+        <strong>Drop your Timeline export here</strong>
+        <span class="muted">or click to choose a file. Everything stays in your browser.</span>
+      </label>
+      <p class="muted small">
+        Google Maps app → your avatar → <em>Your timeline</em> → ⋯ → <em>Location &amp; privacy settings</em> →
+        <em>Export Timeline data</em>. Legacy Takeout files (Records.json, monthly Semantic Location History) work too;
+        select several at once.
+      </p>
+      <button class="btn btn--ghost" id="demo-btn" type="button">Try with demo data</button>
+      <p class="status" id="status" aria-live="polite"></p>
+      <dl class="stats" id="stats" hidden></dl>
+    </section>
+
+    <section class="card" id="explore-card" hidden>
+      <h2>2. Explore around a point</h2>
+      <div class="row">
+        <button class="btn btn--ghost" id="locate-btn" type="button">Use my location</button>
+        <span class="muted small">or drag the pin / click the map</span>
+      </div>
+      <label class="field">
+        <span>Radius <output id="radius-out">2.0 km</output></span>
+        <input id="radius" type="range" min="500" max="10000" step="250" value="2000" />
+      </label>
+      <fieldset class="field">
+        <legend>Categories</legend>
+        <div class="chips" id="categories"></div>
+      </fieldset>
+      <button class="btn btn--primary" id="find-btn" type="button">Find places</button>
+      <p class="status" id="places-status" aria-live="polite"></p>
+    </section>
+
+    <section class="card" id="results-card" hidden>
+      <div class="results-head">
+        <h2>3. Places to try</h2>
+        <label class="field field--inline">
+          <span class="muted small">Sort</span>
+          <select id="sort">
+            <option value="distance">Closest first</option>
+            <option value="familiarity">Least familiar first</option>
+          </select>
+        </label>
+      </div>
+      <div class="chips" id="levels" role="group" aria-label="Familiarity filter"></div>
+      <p class="muted small" id="results-summary"></p>
+      <ol class="results" id="results"></ol>
+    </section>
+
+    <footer class="panel__foot muted small">
+      Map data © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, tiles by
+      <a href="https://carto.com/attributions">CARTO</a>. Places via the Overpass API.
+    </footer>
+  </aside>
+
+  <main class="map-wrap">
+    <div id="map" role="application" aria-label="Map"></div>
+    <div class="legend" id="legend" hidden>
+      <span class="legend__ramp" aria-hidden="true"></span>
+      <span class="small">rarely here</span><span class="small legend__right">often here</span>
+    </div>
+  </main>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="vendor/leaflet/leaflet-heat.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

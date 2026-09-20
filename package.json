@@ -1,0 +1,12 @@
+{
+  "name": "unexplored",
+  "version": "0.1.0",
+  "description": "A heatmap of everywhere you have been, and the places nearby you have not.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node serve.js",
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "license": "MIT"
+}
