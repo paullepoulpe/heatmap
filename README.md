@@ -20,7 +20,11 @@ than opened from `file://`:
 npm start          # http://localhost:8080
 ```
 
-or any static server (`python3 -m http.server 8080`), or enable GitHub Pages on this branch.
+or any static server (`python3 -m http.server 8080`).
+
+Pushes to the default branch also deploy the site to GitHub Pages through
+`.github/workflows/pages.yml` (tests run first). The workflow enables Pages on first run; if that
+step is refused, enable it once under **Settings → Pages → Source: GitHub Actions**.
 
 ## Get your Timeline export
 
