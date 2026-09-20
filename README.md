@@ -13,6 +13,11 @@ Load your Timeline export and the map turns into a fog-of-war view of your life:
   OpenStreetMap are ranked by how unfamiliar they are to you.
 - An optional **heatmap** of time spent, for the big picture.
 
+The map fills the screen; three floating buttons open the import, layer and places panels.
+Once imported, your history is saved in the browser's IndexedDB (localStorage is far too small
+for years of points), so the next visit restores it instantly. Settings and the last map view are
+remembered too, and "Forget" in the import panel wipes the saved copy.
+
 Only travel on foot counts by default. Track points are tagged with a travel mode from Google's
 activity segments (walking, cycling, in a vehicle) and, where those are missing, from the speed
 between fixes, so a drive across town does not light up the streets you drove down.
@@ -55,7 +60,7 @@ the old Takeout files and the new on-device export together.
 The points that count (see "Count as walked") mark a 20 m grid of "been here" cells within the
 reveal radius. Each street in view is sampled every 10 m and split into runs of covered and
 uncovered samples; a park is visited when any covered cell lies inside it. Streets and parks come
-from the Overpass API for the area on screen, once it is smaller than about 12 km², and are cached
+from the Overpass API for the area on screen, once it is smaller than about 20 km², and are cached
 as you pan.
 
 ## How places are scored
@@ -89,6 +94,7 @@ js/score.js     spatial grid index, familiarity, distance, heat aggregation
 js/coverage.js  "been here" grid, street sampling, park point-in-polygon
 js/places.js    Overpass queries (places, streets, parks) with endpoint fallback
 js/canvas-layer.js  one-canvas Leaflet layer used for the fog and the coverage
+js/storage.js   IndexedDB history store (packed typed arrays) and localStorage settings
 js/demo.js      synthetic history + places for "Try with demo data"
 js/app.js       UI and Leaflet wiring
 vendor/leaflet  Leaflet 1.9.4 and leaflet.heat 0.2.0, vendored (no CDN, works offline)
@@ -101,7 +107,6 @@ npm test
 
 ## Ideas for later
 
-- Cache the parsed history in IndexedDB so you import once.
 - Parse the export in a Web Worker so very large files do not freeze the page.
 - Live tracking from the browser's geolocation to keep the map current after the import.
 - Time filters: only weekends, only the last year, only evenings.

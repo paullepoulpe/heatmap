@@ -2,109 +2,140 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#161b22" />
   <title>Unexplored</title>
   <meta name="description" content="Every street you have walked and every park you have been to, drawn from your Google Timeline, and the ones you have not." />
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
   <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
-  <aside class="panel" id="panel">
-    <header class="panel__head">
-      <h1>Unexplored</h1>
-      <p class="muted">Your Google Timeline on a map: the streets you have walked, the parks you have been to, and everything nearby you have not.</p>
-    </header>
+  <div id="map" role="application" aria-label="Map"></div>
 
-    <section class="card" id="import-card">
-      <h2>1. Load your history</h2>
+  <div class="hud">
+    <div class="toolbar" role="toolbar" aria-label="Unexplored">
+      <span class="brand">Unexplored</span>
+      <button class="fab" type="button" data-panel="import" aria-label="Load history" title="Load history">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2h8.5A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg>
+      </button>
+      <button class="fab" type="button" data-panel="layers" aria-label="What the map shows" title="What the map shows">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2 8.5 12 14l10-5.5L12 3z"/><path d="m2 13.5 10 5.5 10-5.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+      </button>
+      <button class="fab" type="button" data-panel="explore" aria-label="Places to try" title="Places to try">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z"/></svg>
+      </button>
+    </div>
+    <button class="pill" type="button" id="coverage-pill" data-panel="layers" hidden></button>
+  </div>
+
+  <div class="legend" id="legend" hidden>
+    <span class="legend__item"><i class="legend__line legend__line--walked"></i>walked</span>
+    <span class="legend__item"><i class="legend__line legend__line--unwalked"></i>not yet</span>
+    <span class="legend__item"><i class="legend__fog"></i>never been</span>
+    <span class="legend__item" id="legend-heat" hidden><i class="legend__ramp"></i>time spent</span>
+  </div>
+
+  <!-- Panels -->
+  <section class="panel" id="panel-import" hidden aria-labelledby="h-import">
+    <header class="panel__head">
+      <h2 id="h-import">Load your history</h2>
+      <button class="close" type="button" data-close aria-label="Close">×</button>
+    </header>
+    <div class="panel__body">
       <label class="drop" id="drop" for="file-input">
         <input id="file-input" type="file" accept=".json,application/json" multiple hidden />
         <strong>Drop your Timeline export here</strong>
-        <span class="muted">or click to choose a file. Everything stays in your browser.</span>
+        <span class="muted">or tap to choose a file. Everything stays on this device.</span>
       </label>
       <p class="muted small">
-        Google Maps app → your avatar → <em>Your timeline</em> → ⋯ → <em>Location &amp; privacy settings</em> →
-        <em>Export Timeline data</em>. Legacy Takeout files (Records.json, monthly Semantic Location History) work too;
-        select several at once.
+        Android: phone <em>Settings → Location → Location services → Timeline → Export Timeline data</em>.
+        iPhone: Google Maps → your avatar → <em>Your timeline</em> → ⋯ → <em>Export</em>.
+        Legacy Takeout files (Records.json, monthly Semantic Location History) work too; select several at once.
       </p>
       <button class="btn btn--ghost" id="demo-btn" type="button">Try with demo data</button>
       <p class="status" id="status" aria-live="polite"></p>
       <dl class="stats" id="stats" hidden></dl>
-    </section>
-
-    <section class="card" id="layers-card" hidden>
-      <h2>2. What the map shows</h2>
-      <label class="field">
-        <span>Count as walked</span>
-        <select id="travel">
-          <option value="foot">On foot only</option>
-          <option value="bike">On foot or by bike</option>
-          <option value="any">Any travel, driving too</option>
-        </select>
-      </label>
-      <label class="field">
-        <span>Reveal radius <output id="reveal-out">40 m</output></span>
-        <input id="reveal" type="range" min="15" max="150" step="5" value="40" />
-      </label>
-      <div class="toggles">
-        <label class="toggle"><input type="checkbox" id="layer-fog" checked /> Fog over ground you have not covered</label>
-        <label class="toggle"><input type="checkbox" id="layer-streets" checked /> Streets: walked vs not walked</label>
-        <label class="toggle"><input type="checkbox" id="layer-parks" checked /> Parks: visited vs not visited</label>
-        <label class="toggle"><input type="checkbox" id="layer-heat" /> Heatmap of time spent</label>
+      <div class="row" id="saved-row" hidden>
+        <span class="muted small" id="saved-note"></span>
+        <button class="btn btn--small" id="forget-btn" type="button">Forget</button>
       </div>
-      <p class="status" id="coverage-status" aria-live="polite"></p>
-      <dl class="stats" id="coverage-stats" hidden></dl>
-    </section>
+    </div>
+  </section>
 
-    <section class="card" id="explore-card" hidden>
-      <h2>3. Explore around a point</h2>
-      <div class="row">
-        <button class="btn btn--ghost" id="locate-btn" type="button">Use my location</button>
-        <span class="muted small">or drag the pin / click the map</span>
-      </div>
-      <label class="field">
-        <span>Radius <output id="radius-out">2.0 km</output></span>
-        <input id="radius" type="range" min="500" max="10000" step="250" value="2000" />
-      </label>
-      <fieldset class="field">
-        <legend>Categories</legend>
-        <div class="chips" id="categories"></div>
-      </fieldset>
-      <button class="btn btn--primary" id="find-btn" type="button">Find places</button>
-      <p class="status" id="places-status" aria-live="polite"></p>
-    </section>
-
-    <section class="card" id="results-card" hidden>
-      <div class="results-head">
-        <h2>4. Places to try</h2>
-        <label class="field field--inline">
-          <span class="muted small">Sort</span>
-          <select id="sort">
-            <option value="distance">Closest first</option>
-            <option value="familiarity">Least familiar first</option>
+  <section class="panel" id="panel-layers" hidden aria-labelledby="h-layers">
+    <header class="panel__head">
+      <h2 id="h-layers">What the map shows</h2>
+      <button class="close" type="button" data-close aria-label="Close">×</button>
+    </header>
+    <div class="panel__body">
+      <p class="muted small" id="no-data-layers">Load your history first.</p>
+      <div id="layers-controls" hidden>
+        <label class="field">
+          <span>Count as walked</span>
+          <select id="travel">
+            <option value="foot">On foot only</option>
+            <option value="bike">On foot or by bike</option>
+            <option value="any">Any travel, driving too</option>
           </select>
         </label>
+        <label class="field">
+          <span>Reveal radius <output id="reveal-out">40 m</output></span>
+          <input id="reveal" type="range" min="15" max="150" step="5" value="40" />
+        </label>
+        <div class="toggles">
+          <label class="toggle"><input type="checkbox" id="layer-fog" checked /> Fog over ground you have not covered</label>
+          <label class="toggle"><input type="checkbox" id="layer-streets" checked /> Streets: walked vs not walked</label>
+          <label class="toggle"><input type="checkbox" id="layer-parks" checked /> Parks: visited vs not visited</label>
+          <label class="toggle"><input type="checkbox" id="layer-heat" /> Heatmap of time spent</label>
+        </div>
+        <p class="status" id="coverage-status" aria-live="polite"></p>
+        <dl class="stats" id="coverage-stats" hidden></dl>
       </div>
-      <div class="chips" id="levels" role="group" aria-label="Familiarity filter"></div>
-      <p class="muted small" id="results-summary"></p>
-      <ol class="results" id="results"></ol>
-    </section>
-
-    <footer class="panel__foot muted small">
-      Map data © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, tiles by
-      <a href="https://carto.com/attributions">CARTO</a>. Places via the Overpass API.
-    </footer>
-  </aside>
-
-  <main class="map-wrap">
-    <div id="map" role="application" aria-label="Map"></div>
-    <div class="legend" id="legend" hidden>
-      <span class="legend__item"><i class="legend__line legend__line--walked"></i>walked</span>
-      <span class="legend__item"><i class="legend__line legend__line--unwalked"></i>not yet</span>
-      <span class="legend__item"><i class="legend__fog"></i>never been</span>
-      <span class="legend__item" id="legend-heat" hidden><i class="legend__ramp"></i>time spent</span>
     </div>
-  </main>
+  </section>
+
+  <section class="panel" id="panel-explore" hidden aria-labelledby="h-explore">
+    <header class="panel__head">
+      <h2 id="h-explore">Places to try</h2>
+      <button class="close" type="button" data-close aria-label="Close">×</button>
+    </header>
+    <div class="panel__body">
+      <p class="muted small" id="no-data-explore">Load your history first.</p>
+      <div id="explore-controls" hidden>
+        <div class="row">
+          <button class="btn btn--ghost" id="locate-btn" type="button">Use my location</button>
+          <span class="muted small">or drag the pin / tap the map</span>
+        </div>
+        <label class="field">
+          <span>Radius <output id="radius-out">2.0 km</output></span>
+          <input id="radius" type="range" min="500" max="10000" step="250" value="2000" />
+        </label>
+        <fieldset class="field">
+          <legend>Categories</legend>
+          <div class="chips" id="categories"></div>
+        </fieldset>
+        <button class="btn btn--primary" id="find-btn" type="button">Find places</button>
+        <p class="status" id="places-status" aria-live="polite"></p>
+        <div id="results-card" hidden>
+          <div class="results-head">
+            <div class="chips" id="levels" role="group" aria-label="Familiarity filter"></div>
+            <label class="field field--inline">
+              <select id="sort" aria-label="Sort">
+                <option value="distance">Closest first</option>
+                <option value="familiarity">Least familiar first</option>
+              </select>
+            </label>
+          </div>
+          <p class="muted small" id="results-summary"></p>
+          <ol class="results" id="results"></ol>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="credits small">
+    © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · <a href="https://carto.com/attributions">CARTO</a> · Overpass
+  </footer>
 
   <script src="vendor/leaflet/leaflet.js"></script>
   <script src="vendor/leaflet/leaflet-heat.js"></script>

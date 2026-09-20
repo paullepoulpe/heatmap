@@ -3,6 +3,7 @@ import { SpatialIndex, LEVELS, scorePlaces, aggregateForHeat, haversine } from '
 import { CATEGORIES, fetchPlaces, elementToPlace, dedupePlaces, fetchArea, parseAreaElements } from './places.js';
 import { CoverageGrid, computeCoverage, pointsForMode } from './coverage.js';
 import { createCanvasLayer, metersPerPixel } from './canvas-layer.js';
+import { saveHistory, loadHistory, clearHistory, loadSettings, saveSettings } from './storage.js';
 import { makeDemoTimeline, makeDemoPlaces, makeDemoArea } from './demo.js';
 
 const $ = (id) => document.getElementById(id);
@@ -12,7 +13,23 @@ const els = {
   demo: $('demo-btn'),
   status: $('status'),
   stats: $('stats'),
-  explore: $('explore-card'),
+  savedRow: $('saved-row'),
+  savedNote: $('saved-note'),
+  forget: $('forget-btn'),
+  noDataLayers: $('no-data-layers'),
+  layersControls: $('layers-controls'),
+  travel: $('travel'),
+  reveal: $('reveal'),
+  revealOut: $('reveal-out'),
+  layerFog: $('layer-fog'),
+  layerStreets: $('layer-streets'),
+  layerParks: $('layer-parks'),
+  layerHeat: $('layer-heat'),
+  coverageStatus: $('coverage-status'),
+  coverageStats: $('coverage-stats'),
+  coveragePill: $('coverage-pill'),
+  noDataExplore: $('no-data-explore'),
+  exploreControls: $('explore-controls'),
   locate: $('locate-btn'),
   radius: $('radius'),
   radiusOut: $('radius-out'),
@@ -26,17 +43,9 @@ const els = {
   sort: $('sort'),
   legend: $('legend'),
   legendHeat: $('legend-heat'),
-  layersCard: $('layers-card'),
-  travel: $('travel'),
-  reveal: $('reveal'),
-  revealOut: $('reveal-out'),
-  layerFog: $('layer-fog'),
-  layerStreets: $('layer-streets'),
-  layerParks: $('layer-parks'),
-  layerHeat: $('layer-heat'),
-  coverageStatus: $('coverage-status'),
-  coverageStats: $('coverage-stats'),
 };
+
+const settings = loadSettings();
 
 const state = {
   data: null,
@@ -49,22 +58,49 @@ const state = {
   places: [],
   demo: false,
   activeId: null,
-  // coverage view
-  travel: 'foot',
-  reveal: 40,
-  layers: { fog: true, streets: true, parks: true, heat: false },
-  walked: null, // { agg: [...], index: SpatialIndex, grid: CoverageGrid }
+  travel: settings.travel || 'foot',
+  reveal: settings.reveal || 40,
+  layers: { fog: true, streets: true, parks: true, heat: false, ...(settings.layers || {}) },
+  walked: null, // { agg, index: SpatialIndex, grid: CoverageGrid }
   area: { ways: new Map(), areas: new Map(), boxes: [] },
   coverage: null,
   fetchingArea: false,
 };
 
-const MAX_AREA_KM2 = 12;
-
+const MAX_AREA_KM2 = 20;
 const LEVEL_COLORS = { unexplored: '#38bdf8', passed: '#8b97a8', familiar: '#f59e0b' };
 
+// ---------- Panels ----------
+const panels = {
+  import: $('panel-import'),
+  layers: $('panel-layers'),
+  explore: $('panel-explore'),
+};
+
+function openPanel(name) {
+  for (const [key, el] of Object.entries(panels)) el.hidden = key !== name;
+  for (const btn of document.querySelectorAll('.fab[data-panel]')) btn.classList.toggle('is-active', btn.dataset.panel === name);
+  document.body.classList.toggle('has-panel', Boolean(name));
+}
+
+function togglePanel(name) {
+  openPanel(panels[name].hidden ? name : null);
+}
+
+for (const btn of document.querySelectorAll('[data-panel]')) {
+  btn.addEventListener('click', () => (btn.classList.contains('fab') ? togglePanel(btn.dataset.panel) : openPanel(btn.dataset.panel)));
+}
+for (const btn of document.querySelectorAll('[data-close]')) btn.addEventListener('click', () => openPanel(null));
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') openPanel(null);
+});
+
 // ---------- Map ----------
-const map = L.map('map', { zoomControl: true, worldCopyJump: true }).setView([20, 0], 2);
+const map = L.map('map', { zoomControl: false, worldCopyJump: true });
+L.control.zoom({ position: 'bottomright' }).addTo(map);
+if (settings.view) map.setView([settings.view.lat, settings.view.lng], settings.view.zoom);
+else map.setView([20, 0], 2);
+
 L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
   attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
   subdomains: 'abcd',
@@ -79,7 +115,6 @@ const heat = L.heatLayer([], {
   gradient: { 0.15: '#78350f', 0.45: '#d97706', 0.75: '#fbbf24', 1: '#fff7d6' },
 });
 
-// ---------- Fog and coverage canvases ----------
 const fogLayer = createCanvasLayer((ctx, v) => {
   if (!state.walked) return;
   ctx.fillStyle = 'rgba(15, 18, 22, 0.55)';
@@ -89,7 +124,6 @@ const fogLayer = createCanvasLayer((ctx, v) => {
   const mpp = metersPerPixel(map.getCenter().lat, v.zoom);
   const r = Math.max(2.5, state.reveal / mpp);
   ctx.globalCompositeOperation = 'destination-out';
-  // soft halo first, then the fully cleared core
   ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
   ctx.beginPath();
   for (const p of pts) {
@@ -154,6 +188,8 @@ const coverageLayer = createCanvasLayer((ctx, v) => {
 }, { className: 'coverage-canvas' });
 
 const placesLayer = L.layerGroup().addTo(map);
+let pin = null;
+let circle = null;
 
 function applyLayerVisibility() {
   const want = (on, layer) => {
@@ -165,121 +201,11 @@ function applyLayerVisibility() {
   want(loaded && (state.layers.streets || state.layers.parks), coverageLayer);
   want(loaded && state.layers.heat, heat);
   els.legendHeat.hidden = !state.layers.heat;
-  // keep places on top of the canvases
   if (map.hasLayer(placesLayer)) {
     map.removeLayer(placesLayer);
     placesLayer.addTo(map);
   }
 }
-
-/** Rebuild the "walked" point set, its fog index and coverage grid. */
-function rebuildWalked() {
-  if (!state.data) return;
-  const pts = pointsForMode(state.data.points, state.travel);
-  const agg = aggregateForHeat(pts, 20);
-  state.walked = { agg, index: new SpatialIndex(agg, 500), grid: new CoverageGrid(agg, { cellMeters: 20, reach: Math.max(25, state.reveal) }) };
-  fogLayer.redraw();
-  refreshCoverage();
-}
-
-// ---------- Streets and parks for the current view ----------
-function viewBox(pad = 0) {
-  const b = map.getBounds().pad(pad);
-  return { south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() };
-}
-
-function boxAreaKm2(b) {
-  const h = haversine(b.south, b.west, b.north, b.west);
-  const w = haversine(b.south, b.west, b.south, b.east);
-  return (h * w) / 1e6;
-}
-
-const contains = (outer, inner) =>
-  inner.south >= outer.south && inner.north <= outer.north && inner.west >= outer.west && inner.east <= outer.east;
-
-const intersects = (a, b) => !(a.east < b.west || a.west > b.east || a.north < b.south || a.south > b.north);
-
-function boxOfCoords(coords) {
-  let s = Infinity;
-  let n = -Infinity;
-  let w = Infinity;
-  let e = -Infinity;
-  for (const c of coords) {
-    if (c.lat < s) s = c.lat;
-    if (c.lat > n) n = c.lat;
-    if (c.lng < w) w = c.lng;
-    if (c.lng > e) e = c.lng;
-  }
-  return { south: s, west: w, north: n, east: e };
-}
-
-let coverageTimer = null;
-function scheduleCoverage() {
-  clearTimeout(coverageTimer);
-  coverageTimer = setTimeout(refreshCoverage, 500);
-}
-
-async function refreshCoverage() {
-  if (!state.data || !state.walked) return;
-  if (!state.layers.streets && !state.layers.parks) {
-    els.coverageStatus.textContent = '';
-    els.coverageStats.hidden = true;
-    return;
-  }
-  const view = viewBox();
-  const km2 = boxAreaKm2(view);
-  if (km2 > MAX_AREA_KM2) {
-    state.coverage = null;
-    coverageLayer.redraw();
-    setStatus(els.coverageStatus, 'Zoom in to see which streets and parks you have covered.');
-    els.coverageStats.hidden = true;
-    return;
-  }
-  const fetchBox = viewBox(0.25);
-  if (!state.area.boxes.some((b) => contains(b, view))) {
-    if (state.fetchingArea) return;
-    state.fetchingArea = true;
-    setStatus(els.coverageStatus, 'Loading streets and parks from OpenStreetMap…');
-    try {
-      const { ways, areas } = state.demo ? parseAreaElements(makeDemoArea(fetchBox).elements) : await fetchArea(fetchBox);
-      for (const w of ways) state.area.ways.set(w.id, { ...w, box: boxOfCoords(w.coords) });
-      for (const a of areas) state.area.areas.set(a.id, { ...a, box: boxOfCoords(a.rings.flat()) });
-      state.area.boxes.push(fetchBox);
-    } catch (err) {
-      setStatus(els.coverageStatus, `Could not load streets: ${err.message}. Pan a little to retry.`, true);
-      state.fetchingArea = false;
-      return;
-    }
-    state.fetchingArea = false;
-  }
-  drawCoverageForView(view);
-}
-
-function drawCoverageForView(view) {
-  const ways = [];
-  for (const w of state.area.ways.values()) if (intersects(w.box, view)) ways.push(w);
-  const areas = [];
-  for (const a of state.area.areas.values()) if (intersects(a.box, view)) areas.push(a);
-  const cov = computeCoverage(ways, areas, state.walked.grid);
-  state.coverage = cov;
-  coverageLayer.redraw();
-  const s = cov.stats;
-  const pct = s.totalMeters ? Math.round((100 * s.walkedMeters) / s.totalMeters) : 0;
-  const km = (m) => (m / 1000).toFixed(1);
-  const rows = [];
-  if (state.layers.streets) {
-    rows.push(['Streets walked', `${pct}%`], ['Distance', `${km(s.walkedMeters)} of ${km(s.totalMeters)} km`]);
-  }
-  if (state.layers.parks) rows.push(['Parks visited', `${s.visitedParks} of ${s.parks}`]);
-  els.coverageStats.innerHTML = rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('');
-  els.coverageStats.hidden = false;
-  els.coverageStats.classList.add('stats--tight');
-  setStatus(els.coverageStatus, ways.length || areas.length ? 'In the current view:' : 'No mapped streets or parks in view.');
-}
-
-map.on('moveend', scheduleCoverage);
-let pin = null;
-let circle = null;
 
 function setCenter(latlng, { pan = false } = {}) {
   state.center = { lat: latlng.lat, lng: latlng.lng };
@@ -296,10 +222,22 @@ function setCenter(latlng, { pan = false } = {}) {
 }
 
 map.on('click', (e) => {
-  if (state.data) setCenter(e.latlng);
+  if (!state.data) return;
+  if (!panels.explore.hidden || window.innerWidth > 640) setCenter(e.latlng);
+  if (window.innerWidth <= 640) openPanel(null);
 });
 
-// ---------- Import ----------
+let viewTimer = null;
+map.on('moveend', () => {
+  clearTimeout(viewTimer);
+  viewTimer = setTimeout(() => {
+    const c = map.getCenter();
+    saveSettings({ view: { lat: c.lat, lng: c.lng, zoom: map.getZoom() } });
+  }, 400);
+  scheduleCoverage();
+});
+
+// ---------- Import & persistence ----------
 function setStatus(el, msg, isError = false) {
   el.textContent = msg;
   el.classList.toggle('is-error', isError);
@@ -320,12 +258,24 @@ async function readFiles(files) {
 }
 
 function loadDocuments(docs, { demo = false } = {}) {
-  state.demo = demo;
   const data = parseDocuments(docs);
   if (!data.points.length) {
     setStatus(els.status, 'No location points found. Is this a Google Timeline export?', true);
     return;
   }
+  applyData(data, { demo, fit: true });
+  setStatus(els.status, demo ? 'Demo data loaded. Saving on this device…' : 'Loaded. Saving on this device…');
+  saveHistory(data, { demo })
+    .then(() => {
+      setStatus(els.status, demo ? 'Demo data loaded and saved on this device.' : 'Loaded and saved on this device.');
+      showSaved(Date.now());
+    })
+    .catch((err) => setStatus(els.status, `Loaded, but could not save on this device (${err.message}).`, true));
+}
+
+/** Put a parsed bundle on the map (fresh import or restored from storage). */
+function applyData(data, { demo = false, fit = false } = {}) {
+  state.demo = demo;
   state.data = data;
   state.index = new SpatialIndex(data.points);
   const heatPoints = aggregateForHeat(data.points);
@@ -336,20 +286,25 @@ function loadDocuments(docs, { demo = false } = {}) {
 
   const hot = state.index.hotspot();
   setCenter(L.latLng(hot.lat, hot.lng));
-  map.setView([hot.lat, hot.lng], 15);
+  if (fit || !settings.view) map.setView([hot.lat, hot.lng], 15);
 
   state.area = { ways: new Map(), areas: new Map(), boxes: [] };
   state.coverage = null;
-  rebuildWalked();
-  applyLayerVisibility();
-
-  renderStats(data);
-  els.layersCard.hidden = false;
-  els.explore.hidden = false;
-  els.resultsCard.hidden = true;
   state.places = [];
   placesLayer.clearLayers();
-  setStatus(els.status, demo ? 'Demo data loaded. Now find places around the pin.' : 'Loaded. Drag the pin to where you are, then find places.');
+  els.resultsCard.hidden = true;
+  rebuildWalked();
+  applyLayerVisibility();
+  renderStats(data);
+  els.noDataLayers.hidden = true;
+  els.layersControls.hidden = false;
+  els.noDataExplore.hidden = true;
+  els.exploreControls.hidden = false;
+}
+
+function showSaved(savedAt) {
+  els.savedRow.hidden = false;
+  els.savedNote.textContent = `Saved on this device ${new Date(savedAt).toLocaleString()}`;
 }
 
 function renderStats(data) {
@@ -398,24 +353,168 @@ els.demo.addEventListener('click', () => {
   setTimeout(() => loadDocuments([makeDemoTimeline()], { demo: true }), 20);
 });
 
+els.forget.addEventListener('click', async () => {
+  try {
+    await clearHistory();
+    els.savedRow.hidden = true;
+    setStatus(els.status, 'Saved history removed from this device. The map keeps what is loaded until you reload the page.');
+  } catch (err) {
+    setStatus(els.status, `Could not remove saved history (${err.message}).`, true);
+  }
+});
+
+async function restoreSaved() {
+  const saved = await loadHistory();
+  if (!saved) {
+    openPanel('import');
+    return;
+  }
+  applyData({ points: saved.points, visits: saved.visits, meta: saved.meta }, { demo: saved.demo, fit: !settings.view });
+  showSaved(saved.savedAt);
+  setStatus(els.status, saved.demo ? 'Demo data restored from this device.' : 'History restored from this device.');
+}
+
+// ---------- Coverage (fog, streets, parks) ----------
+function rebuildWalked() {
+  if (!state.data) return;
+  const pts = pointsForMode(state.data.points, state.travel);
+  const agg = aggregateForHeat(pts, 20);
+  state.walked = { agg, index: new SpatialIndex(agg, 500), grid: new CoverageGrid(agg, { cellMeters: 20, reach: Math.max(25, state.reveal) }) };
+  fogLayer.redraw();
+  refreshCoverage();
+}
+
+function viewBox(pad = 0) {
+  const b = map.getBounds().pad(pad);
+  return { south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() };
+}
+
+function boxAreaKm2(b) {
+  const h = haversine(b.south, b.west, b.north, b.west);
+  const w = haversine(b.south, b.west, b.south, b.east);
+  return (h * w) / 1e6;
+}
+
+const contains = (outer, inner) =>
+  inner.south >= outer.south && inner.north <= outer.north && inner.west >= outer.west && inner.east <= outer.east;
+const intersects = (a, b) => !(a.east < b.west || a.west > b.east || a.north < b.south || a.south > b.north);
+
+function boxOfCoords(coords) {
+  let s = Infinity;
+  let n = -Infinity;
+  let w = Infinity;
+  let e = -Infinity;
+  for (const c of coords) {
+    if (c.lat < s) s = c.lat;
+    if (c.lat > n) n = c.lat;
+    if (c.lng < w) w = c.lng;
+    if (c.lng > e) e = c.lng;
+  }
+  return { south: s, west: w, north: n, east: e };
+}
+
+let coverageTimer = null;
+function scheduleCoverage() {
+  clearTimeout(coverageTimer);
+  coverageTimer = setTimeout(refreshCoverage, 500);
+}
+
+async function refreshCoverage() {
+  if (!state.data || !state.walked) return;
+  if (!state.layers.streets && !state.layers.parks) {
+    els.coverageStatus.textContent = '';
+    els.coverageStats.hidden = true;
+    els.coveragePill.hidden = true;
+    return;
+  }
+  const view = viewBox();
+  if (boxAreaKm2(view) > MAX_AREA_KM2) {
+    state.coverage = null;
+    coverageLayer.redraw();
+    setStatus(els.coverageStatus, 'Zoom in to see which streets and parks you have covered.');
+    els.coverageStats.hidden = true;
+    els.coveragePill.hidden = false;
+    els.coveragePill.textContent = 'Zoom in for streets';
+    return;
+  }
+  const fetchBox = viewBox(0.25);
+  if (!state.area.boxes.some((b) => contains(b, view))) {
+    if (state.fetchingArea) return;
+    state.fetchingArea = true;
+    setStatus(els.coverageStatus, 'Loading streets and parks from OpenStreetMap…');
+    els.coveragePill.hidden = false;
+    els.coveragePill.textContent = 'Loading streets…';
+    try {
+      const { ways, areas } = state.demo ? parseAreaElements(makeDemoArea(fetchBox).elements) : await fetchArea(fetchBox);
+      for (const w of ways) state.area.ways.set(w.id, { ...w, box: boxOfCoords(w.coords) });
+      for (const a of areas) state.area.areas.set(a.id, { ...a, box: boxOfCoords(a.rings.flat()) });
+      state.area.boxes.push(fetchBox);
+    } catch (err) {
+      setStatus(els.coverageStatus, `Could not load streets: ${err.message}. Pan a little to retry.`, true);
+      els.coveragePill.textContent = 'Streets failed to load';
+      state.fetchingArea = false;
+      return;
+    }
+    state.fetchingArea = false;
+  }
+  drawCoverageForView(view);
+}
+
+function drawCoverageForView(view) {
+  const ways = [];
+  for (const w of state.area.ways.values()) if (intersects(w.box, view)) ways.push(w);
+  const areas = [];
+  for (const a of state.area.areas.values()) if (intersects(a.box, view)) areas.push(a);
+  const cov = computeCoverage(ways, areas, state.walked.grid);
+  state.coverage = cov;
+  coverageLayer.redraw();
+  const s = cov.stats;
+  const pct = s.totalMeters ? Math.round((100 * s.walkedMeters) / s.totalMeters) : 0;
+  const km = (m) => (m / 1000).toFixed(1);
+  const rows = [];
+  const pill = [];
+  if (state.layers.streets) {
+    rows.push(['Streets walked', `${pct}%`], ['Distance', `${km(s.walkedMeters)} of ${km(s.totalMeters)} km`]);
+    pill.push(`<b>${pct}%</b> of streets walked`);
+  }
+  if (state.layers.parks) {
+    rows.push(['Parks visited', `${s.visitedParks} of ${s.parks}`]);
+    pill.push(`<b>${s.visitedParks}</b>/${s.parks} parks`);
+  }
+  els.coverageStats.innerHTML = rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('');
+  els.coverageStats.hidden = false;
+  els.coveragePill.innerHTML = pill.join('<span class="sep">·</span>');
+  els.coveragePill.hidden = false;
+  setStatus(els.coverageStatus, ways.length || areas.length ? 'In the current view:' : 'No mapped streets or parks in view.');
+}
+
 // ---------- Layer controls ----------
+els.travel.value = state.travel;
 els.travel.addEventListener('change', () => {
   state.travel = els.travel.value;
+  saveSettings({ travel: state.travel });
   rebuildWalked();
 });
 
+els.reveal.value = state.reveal;
+els.revealOut.value = `${state.reveal} m`;
 let revealTimer = null;
 els.reveal.addEventListener('input', () => {
   state.reveal = Number(els.reveal.value);
   els.revealOut.value = `${state.reveal} m`;
   fogLayer.redraw();
   clearTimeout(revealTimer);
-  revealTimer = setTimeout(rebuildWalked, 300);
+  revealTimer = setTimeout(() => {
+    saveSettings({ reveal: state.reveal });
+    rebuildWalked();
+  }, 300);
 });
 
 for (const [key, el] of [['fog', els.layerFog], ['streets', els.layerStreets], ['parks', els.layerParks], ['heat', els.layerHeat]]) {
+  el.checked = state.layers[key];
   el.addEventListener('change', () => {
     state.layers[key] = el.checked;
+    saveSettings({ layers: state.layers });
     applyLayerVisibility();
     if (key === 'streets' || key === 'parks') refreshCoverage();
   });
@@ -472,12 +571,9 @@ els.find.addEventListener('click', async () => {
   setStatus(els.placesStatus, 'Asking OpenStreetMap for places nearby…');
   const params = { lat: state.center.lat, lng: state.center.lng, radius: state.radius, categories: [...state.categories] };
   try {
-    let places;
-    if (state.demo) {
-      places = dedupePlaces(makeDemoPlaces(params).elements.map(elementToPlace).filter(Boolean));
-    } else {
-      places = await fetchPlaces(params);
-    }
+    const places = state.demo
+      ? dedupePlaces(makeDemoPlaces(params).elements.map(elementToPlace).filter(Boolean))
+      : await fetchPlaces(params);
     state.places = places;
     setStatus(els.placesStatus, places.length ? `${places.length} named places found.` : 'Nothing found here. Try a bigger radius or more categories.');
     els.resultsCard.hidden = false;
@@ -554,7 +650,8 @@ els.results.addEventListener('click', (e) => {
   const li = e.target.closest('.result');
   if (li) {
     setActive(li.dataset.id);
-    li.scrollIntoView({ block: 'nearest' });
+    if (window.innerWidth <= 640) openPanel(null);
+    else li.scrollIntoView({ block: 'nearest' });
   }
 });
 
@@ -562,5 +659,7 @@ function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
 
-// Expose a little for debugging and tests.
-window.__unexplored = { state, map, loadDocuments, haversine, refreshCoverage };
+// ---------- Boot ----------
+restoreSaved();
+
+window.__unexplored = { state, map, loadDocuments, haversine, refreshCoverage, openPanel };
