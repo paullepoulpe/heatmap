@@ -2,6 +2,9 @@
 // Pure functions, no DOM: this module is shared by the browser app and the Node tests.
 //
 // Supported inputs (auto-detected):
+// Every point carries a travel mode ('foot', 'bike', 'vehicle', 'stay' for visits,
+// or 'unknown') so the map can show only the streets you actually walked.
+//
 //   1. On-device export from the Google Maps app on Android ("Timeline.json"):
 //      { semanticSegments: [...], rawSignals: [...], userLocationProfile: {...} }
 //   2. On-device export from the Google Maps app on iOS: a top-level array of
@@ -19,6 +22,28 @@ export const WEIGHTS = {
   path: 0.05, // one breadcrumb on a route
   raw: 0.02, // one raw position signal
 };
+
+/** Travel mode buckets, from Google's activity type names or from inferred speed. */
+export const MODES = ['foot', 'bike', 'vehicle', 'unknown'];
+
+const FOOT_TYPES = /^(WALKING|RUNNING|HIKING|ON_FOOT|STILL)$/;
+const BIKE_TYPES = /^(CYCLING|ON_BICYCLE)$/;
+
+export function modeFromActivityType(type) {
+  if (!type) return 'unknown';
+  if (FOOT_TYPES.test(type)) return 'foot';
+  if (BIKE_TYPES.test(type)) return 'bike';
+  if (type === 'UNKNOWN_ACTIVITY_TYPE' || type === 'UNKNOWN') return 'unknown';
+  return 'vehicle';
+}
+
+/** Mode from a speed in m/s between two consecutive fixes. */
+export function modeFromSpeed(mps) {
+  if (!Number.isFinite(mps)) return 'unknown';
+  if (mps < 2.5) return 'foot';
+  if (mps < 8) return 'bike';
+  return 'vehicle';
+}
 
 const DEG_RE = /^\s*(-?\d+(?:\.\d+)?)\s*°?\s*,\s*(-?\d+(?:\.\d+)?)\s*°?\s*$/;
 const GEO_RE = /^\s*geo:\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/i;
@@ -123,6 +148,8 @@ export function parseDocument(doc) {
 }
 
 function parseSegments(segments, out) {
+  const activities = [];
+  const pathRuns = [];
   for (const seg of segments) {
     if (!seg || typeof seg !== 'object') continue;
     const start = seg.startTime;
@@ -140,17 +167,22 @@ function parseSegments(segments, out) {
           label: cand.semanticType && cand.semanticType !== 'UNKNOWN' ? cand.semanticType : null,
           placeId: cand.placeId || null,
         });
-        out.points.push({ ...ll, w: visitWeight(hours), t: toMs(start), kind: 'visit' });
+        out.points.push({ ...ll, w: visitWeight(hours), t: toMs(start), kind: 'visit', mode: 'stay' });
       }
     }
     if (seg.activity) {
+      const mode = modeFromActivityType(seg.activity.topCandidate && seg.activity.topCandidate.type);
+      const t0 = toMs(start);
+      const t1 = toMs(end);
+      if (Number.isFinite(t0) && Number.isFinite(t1)) activities.push({ t0, t1, mode });
       const a = parseLatLng(seg.activity.start);
       const b = parseLatLng(seg.activity.end);
-      if (a) out.points.push({ ...a, w: WEIGHTS.path, t: toMs(start), kind: 'path' });
-      if (b) out.points.push({ ...b, w: WEIGHTS.path, t: toMs(end), kind: 'path' });
+      if (a) out.points.push({ ...a, w: WEIGHTS.path, t: t0, kind: 'path', mode });
+      if (b) out.points.push({ ...b, w: WEIGHTS.path, t: t1, kind: 'path', mode });
     }
     if (Array.isArray(seg.timelinePath)) {
       const startMs = toMs(start);
+      const run = [];
       for (const p of seg.timelinePath) {
         const ll = parseLatLng(p);
         if (!ll) continue;
@@ -158,13 +190,72 @@ function parseSegments(segments, out) {
         if (!Number.isFinite(t) && p.durationMinutesOffsetFromStartTime != null && Number.isFinite(startMs)) {
           t = startMs + Number(p.durationMinutesOffsetFromStartTime) * 60000;
         }
-        out.points.push({ ...ll, w: WEIGHTS.path, t, kind: 'path' });
+        const pt = { ...ll, w: WEIGHTS.path, t, kind: 'path', mode: 'unknown' };
+        out.points.push(pt);
+        run.push(pt);
       }
+      if (run.length) pathRuns.push(run);
+    }
+  }
+  tagRunsByActivity(pathRuns, activities);
+}
+
+/**
+ * Give breadcrumb runs a travel mode: the activity segment covering the same
+ * time wins, otherwise the speed between consecutive fixes decides.
+ */
+function tagRunsByActivity(runs, activities) {
+  activities.sort((a, b) => a.t0 - b.t0);
+  const findActivity = (t) => {
+    let lo = 0;
+    let hi = activities.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const a = activities[mid];
+      if (t < a.t0) hi = mid - 1;
+      else if (t > a.t1) lo = mid + 1;
+      else return a;
+    }
+    return null;
+  };
+  for (const run of runs) {
+    tagRunBySpeed(run);
+    if (!activities.length) continue;
+    for (const p of run) {
+      if (!Number.isFinite(p.t)) continue;
+      const a = findActivity(p.t);
+      if (a && a.mode !== 'unknown') p.mode = a.mode;
     }
   }
 }
 
+/** Infer modes for a time-ordered run of fixes from their pairwise speed. */
+export function tagRunBySpeed(run) {
+  if (run.length < 2) return run;
+  const speeds = new Array(run.length).fill(NaN);
+  for (let i = 1; i < run.length; i++) {
+    const a = run[i - 1];
+    const b = run[i];
+    const dt = (b.t - a.t) / 1000;
+    if (!Number.isFinite(dt) || dt <= 0 || dt > 3600) continue;
+    speeds[i] = fastDistance(a.lat, a.lng, b.lat, b.lng) / dt;
+  }
+  for (let i = 0; i < run.length; i++) {
+    // use the faster of the two adjacent legs so a stop at a light does not make a drive look like a walk
+    const s = Math.max(speeds[i] || 0, speeds[i + 1] || 0);
+    if (Number.isFinite(speeds[i]) || Number.isFinite(speeds[i + 1])) run[i].mode = modeFromSpeed(s);
+  }
+  return run;
+}
+
+function fastDistance(lat1, lng1, lat2, lng2) {
+  const x = ((lng2 - lng1) * Math.PI / 180) * Math.cos(((lat1 + lat2) / 2) * Math.PI / 180);
+  const y = (lat2 - lat1) * Math.PI / 180;
+  return Math.sqrt(x * x + y * y) * 6371000;
+}
+
 function parseRawSignals(signals, out) {
+  const run = [];
   for (const s of signals) {
     const pos = s && s.position;
     if (!pos) continue;
@@ -172,8 +263,12 @@ function parseRawSignals(signals, out) {
     if (!ll) continue;
     const acc = Number(pos.accuracyMeters);
     if (Number.isFinite(acc) && acc > 200) continue; // ignore coarse cell fixes
-    out.points.push({ ...ll, w: WEIGHTS.raw, t: toMs(pos.timestamp), kind: 'raw' });
+    const pt = { ...ll, w: WEIGHTS.raw, t: toMs(pos.timestamp), kind: 'raw', mode: 'unknown' };
+    out.points.push(pt);
+    run.push(pt);
   }
+  run.sort((a, b) => a.t - b.t);
+  tagRunBySpeed(run);
 }
 
 function parseTimelineObjects(objects, out) {
@@ -193,7 +288,7 @@ function parseTimelineObjects(objects, out) {
           label: (v.location && v.location.name) || null,
           placeId: (v.location && v.location.placeId) || null,
         });
-        out.points.push({ ...ll, w: visitWeight(hours), t: toMs(d.startTimestamp ?? d.startTimestampMs), kind: 'visit' });
+        out.points.push({ ...ll, w: visitWeight(hours), t: toMs(d.startTimestamp ?? d.startTimestampMs), kind: 'visit', mode: 'stay' });
       }
     }
     if (o.activitySegment) {
@@ -201,32 +296,38 @@ function parseTimelineObjects(objects, out) {
       const d = a.duration || {};
       const t0 = toMs(d.startTimestamp ?? d.startTimestampMs);
       const t1 = toMs(d.endTimestamp ?? d.endTimestampMs);
+      const mode = modeFromActivityType(a.activityType);
       const s = parseLatLng(a.startLocation);
       const e = parseLatLng(a.endLocation);
-      if (s) out.points.push({ ...s, w: WEIGHTS.path, t: t0, kind: 'path' });
-      if (e) out.points.push({ ...e, w: WEIGHTS.path, t: t1, kind: 'path' });
+      if (s) out.points.push({ ...s, w: WEIGHTS.path, t: t0, kind: 'path', mode });
+      if (e) out.points.push({ ...e, w: WEIGHTS.path, t: t1, kind: 'path', mode });
       const wp = (a.waypointPath && a.waypointPath.waypoints) || [];
       for (const p of wp) {
         const ll = parseLatLng(p);
-        if (ll) out.points.push({ ...ll, w: WEIGHTS.path, t: t0, kind: 'path' });
+        if (ll) out.points.push({ ...ll, w: WEIGHTS.path, t: t0, kind: 'path', mode });
       }
       const raw = (a.simplifiedRawPath && a.simplifiedRawPath.points) || [];
       for (const p of raw) {
         const ll = parseLatLng(p);
-        if (ll) out.points.push({ ...ll, w: WEIGHTS.path, t: toMs(p.timestampMs ?? p.timestamp) || t0, kind: 'path' });
+        if (ll) out.points.push({ ...ll, w: WEIGHTS.path, t: toMs(p.timestampMs ?? p.timestamp) || t0, kind: 'path', mode });
       }
     }
   }
 }
 
 function parseRecords(locations, out) {
+  const run = [];
   for (const r of locations) {
     const ll = parseLatLng(r);
     if (!ll) continue;
     const acc = Number(r.accuracy);
     if (Number.isFinite(acc) && acc > 200) continue;
-    out.points.push({ ...ll, w: WEIGHTS.raw, t: toMs(r.timestamp ?? r.timestampMs), kind: 'raw' });
+    const pt = { ...ll, w: WEIGHTS.raw, t: toMs(r.timestamp ?? r.timestampMs), kind: 'raw', mode: 'unknown' };
+    out.points.push(pt);
+    run.push(pt);
   }
+  run.sort((a, b) => a.t - b.t);
+  tagRunBySpeed(run);
 }
 
 /**

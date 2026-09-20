@@ -116,8 +116,8 @@ export function dedupePlaces(places) {
   return out;
 }
 
-export async function fetchPlaces(params, { fetchImpl = globalThis.fetch, endpoints = ENDPOINTS } = {}) {
-  const query = buildQuery(params);
+/** POST a query to the first Overpass endpoint that answers. */
+export async function runOverpass(query, { fetchImpl = globalThis.fetch, endpoints = ENDPOINTS } = {}) {
   let lastError = null;
   for (const url of endpoints) {
     try {
@@ -127,12 +127,60 @@ export async function fetchPlaces(params, { fetchImpl = globalThis.fetch, endpoi
         body: `data=${encodeURIComponent(query)}`,
       });
       if (!res.ok) throw new Error(`Overpass ${url} answered ${res.status}`);
-      const json = await res.json();
-      const places = (json.elements || []).map(elementToPlace).filter(Boolean);
-      return dedupePlaces(places);
+      return await res.json();
     } catch (err) {
       lastError = err;
     }
   }
   throw lastError || new Error('No Overpass endpoint reachable');
+}
+
+export async function fetchPlaces(params, opts) {
+  const json = await runOverpass(buildQuery(params), opts);
+  return dedupePlaces((json.elements || []).map(elementToPlace).filter(Boolean));
+}
+
+// ---------- Streets and parks in a bounding box ----------
+
+export const STREET_TYPES = '^(primary|secondary|tertiary|residential|unclassified|living_street|pedestrian|footway|path|cycleway|steps|track)$';
+export const AREA_TYPES = '^(park|garden|nature_reserve|playground|dog_park)$';
+
+/** bbox = { south, west, north, east } */
+export function buildAreaQuery(bbox) {
+  const b = `(${bbox.south.toFixed(6)},${bbox.west.toFixed(6)},${bbox.north.toFixed(6)},${bbox.east.toFixed(6)})`;
+  return `[out:json][timeout:40];
+(
+  way["highway"~"${STREET_TYPES}"]["footway"!~"^(sidewalk|crossing)$"]["area"!="yes"]${b};
+  way["leisure"~"${AREA_TYPES}"]${b};
+  relation["leisure"~"${AREA_TYPES}"]["type"="multipolygon"]${b};
+);
+out geom;`;
+}
+
+/** Turn Overpass `out geom` elements into { ways, areas }. */
+export function parseAreaElements(elements) {
+  const ways = [];
+  const areas = [];
+  for (const el of elements || []) {
+    const tags = el.tags || {};
+    if (el.type === 'way' && Array.isArray(el.geometry)) {
+      const coords = el.geometry.map((g) => ({ lat: g.lat, lng: g.lon }));
+      if (tags.highway) {
+        ways.push({ id: `way/${el.id}`, name: tags.name || null, kind: tags.highway, coords });
+      } else if (tags.leisure) {
+        areas.push({ id: `way/${el.id}`, name: tags.name || null, kind: tags.leisure, rings: [coords] });
+      }
+    } else if (el.type === 'relation' && Array.isArray(el.members) && tags.leisure) {
+      const rings = el.members
+        .filter((m) => m.type === 'way' && m.role !== 'inner' && Array.isArray(m.geometry))
+        .map((m) => m.geometry.map((g) => ({ lat: g.lat, lng: g.lon })));
+      if (rings.length) areas.push({ id: `relation/${el.id}`, name: tags.name || null, kind: tags.leisure, rings });
+    }
+  }
+  return { ways, areas };
+}
+
+export async function fetchArea(bbox, opts) {
+  const json = await runOverpass(buildAreaQuery(bbox), opts);
+  return parseAreaElements(json.elements);
 }

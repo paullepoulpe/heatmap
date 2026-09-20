@@ -1,11 +1,21 @@
 # Unexplored
 
-A heatmap of everywhere you have been, and a list of the places nearby you have never been.
+Every street you have walked and every park you have been to, drawn from your Google Timeline,
+and the ones you have not.
 
-Load your Google Timeline export, and the map lights up where you spend your time. Drop a pin
-anywhere, pick a radius and some categories, and the app asks OpenStreetMap for named places
-around the pin and ranks them by how *unfamiliar* they are to you. The dark patches on the
-map are your next weekend.
+Load your Timeline export and the map turns into a fog-of-war view of your life:
+
+- **Fog** covers ground your tracks never touched; a clear corridor follows everywhere you went.
+- **Streets** in view are drawn amber where you walked them and blue where you never have, with
+  a walked-kilometres tally for the area on screen.
+- **Parks** are shaded visited or not visited.
+- **Places to try**: drop a pin, pick a radius and categories, and named places from
+  OpenStreetMap are ranked by how unfamiliar they are to you.
+- An optional **heatmap** of time spent, for the big picture.
+
+Only travel on foot counts by default. Track points are tagged with a travel mode from Google's
+activity segments (walking, cycling, in a vehicle) and, where those are missing, from the speed
+between fixes, so a drive across town does not light up the streets you drove down.
 
 Everything runs in your browser. Your location history is parsed in memory and never uploaded
 anywhere. The only network calls are for map tiles and the Overpass query for nearby places
@@ -40,6 +50,14 @@ Older Google Takeout exports also work: `Records.json` and the monthly
 several files at once. If you backed up your history before the 2024 migration, feed both
 the old Takeout files and the new on-device export together.
 
+## How coverage works
+
+The points that count (see "Count as walked") mark a 20 m grid of "been here" cells within the
+reveal radius. Each street in view is sampled every 10 m and split into runs of covered and
+uncovered samples; a park is visited when any covered cell lies inside it. Streets and parks come
+from the Overpass API for the area on screen, once it is smaller than about 12 km², and are cached
+as you pan.
+
 ## How places are scored
 
 Every point in your history gets a weight:
@@ -66,9 +84,11 @@ Thresholds and weights live in `js/parse.js` (`WEIGHTS`) and `js/score.js` (`LEV
 ```
 index.html      page
 css/style.css
-js/parse.js     Timeline / Takeout parsers (all four formats), pure functions
+js/parse.js     Timeline / Takeout parsers (all four formats) with travel-mode tagging
 js/score.js     spatial grid index, familiarity, distance, heat aggregation
-js/places.js    Overpass query builder + fetch with endpoint fallback
+js/coverage.js  "been here" grid, street sampling, park point-in-polygon
+js/places.js    Overpass queries (places, streets, parks) with endpoint fallback
+js/canvas-layer.js  one-canvas Leaflet layer used for the fog and the coverage
 js/demo.js      synthetic history + places for "Try with demo data"
 js/app.js       UI and Leaflet wiring
 vendor/leaflet  Leaflet 1.9.4 and leaflet.heat 0.2.0, vendored (no CDN, works offline)
@@ -85,7 +105,8 @@ npm test
 - Parse the export in a Web Worker so very large files do not freeze the page.
 - Live tracking from the browser's geolocation to keep the map current after the import.
 - Time filters: only weekends, only the last year, only evenings.
-- An "exploration score" per neighbourhood, and a route that strings unexplored places together.
+- Per-neighbourhood exploration scores, and a walking route that strings unwalked streets together.
+- Prefetch streets for your whole home area so the coverage view works offline.
 
 ## Credits
 

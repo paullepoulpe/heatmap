@@ -1,7 +1,9 @@
 import { parseDocuments } from './parse.js';
 import { SpatialIndex, LEVELS, scorePlaces, aggregateForHeat, haversine } from './score.js';
-import { CATEGORIES, fetchPlaces, elementToPlace, dedupePlaces } from './places.js';
-import { makeDemoTimeline, makeDemoPlaces } from './demo.js';
+import { CATEGORIES, fetchPlaces, elementToPlace, dedupePlaces, fetchArea, parseAreaElements } from './places.js';
+import { CoverageGrid, computeCoverage, pointsForMode } from './coverage.js';
+import { createCanvasLayer, metersPerPixel } from './canvas-layer.js';
+import { makeDemoTimeline, makeDemoPlaces, makeDemoArea } from './demo.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -23,6 +25,17 @@ const els = {
   levels: $('levels'),
   sort: $('sort'),
   legend: $('legend'),
+  legendHeat: $('legend-heat'),
+  layersCard: $('layers-card'),
+  travel: $('travel'),
+  reveal: $('reveal'),
+  revealOut: $('reveal-out'),
+  layerFog: $('layer-fog'),
+  layerStreets: $('layer-streets'),
+  layerParks: $('layer-parks'),
+  layerHeat: $('layer-heat'),
+  coverageStatus: $('coverage-status'),
+  coverageStats: $('coverage-stats'),
 };
 
 const state = {
@@ -36,13 +49,23 @@ const state = {
   places: [],
   demo: false,
   activeId: null,
+  // coverage view
+  travel: 'foot',
+  reveal: 40,
+  layers: { fog: true, streets: true, parks: true, heat: false },
+  walked: null, // { agg: [...], index: SpatialIndex, grid: CoverageGrid }
+  area: { ways: new Map(), areas: new Map(), boxes: [] },
+  coverage: null,
+  fetchingArea: false,
 };
+
+const MAX_AREA_KM2 = 12;
 
 const LEVEL_COLORS = { unexplored: '#38bdf8', passed: '#8b97a8', familiar: '#f59e0b' };
 
 // ---------- Map ----------
 const map = L.map('map', { zoomControl: true, worldCopyJump: true }).setView([20, 0], 2);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
   attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
   subdomains: 'abcd',
   maxZoom: 20,
@@ -54,9 +77,207 @@ const heat = L.heatLayer([], {
   minOpacity: 0.25,
   maxZoom: 15,
   gradient: { 0.15: '#78350f', 0.45: '#d97706', 0.75: '#fbbf24', 1: '#fff7d6' },
-}).addTo(map);
+});
+
+// ---------- Fog and coverage canvases ----------
+const fogLayer = createCanvasLayer((ctx, v) => {
+  if (!state.walked) return;
+  ctx.fillStyle = 'rgba(15, 18, 22, 0.55)';
+  ctx.fillRect(0, 0, v.width, v.height);
+  const b = v.bounds;
+  const pts = state.walked.index.inBounds({ south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() });
+  const mpp = metersPerPixel(map.getCenter().lat, v.zoom);
+  const r = Math.max(2.5, state.reveal / mpp);
+  ctx.globalCompositeOperation = 'destination-out';
+  // soft halo first, then the fully cleared core
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+  ctx.beginPath();
+  for (const p of pts) {
+    const q = v.project(p.lat, p.lng);
+    ctx.moveTo(q.x + r * 1.7, q.y);
+    ctx.arc(q.x, q.y, r * 1.7, 0, Math.PI * 2);
+  }
+  ctx.fill();
+  ctx.fillStyle = 'rgba(0, 0, 0, 1)';
+  ctx.beginPath();
+  for (const p of pts) {
+    const q = v.project(p.lat, p.lng);
+    ctx.moveTo(q.x + r, q.y);
+    ctx.arc(q.x, q.y, r, 0, Math.PI * 2);
+  }
+  ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+}, { className: 'fog-canvas' });
+
+const coverageLayer = createCanvasLayer((ctx, v) => {
+  const cov = state.coverage;
+  if (!cov) return;
+  const lw = v.zoom >= 17 ? 4 : v.zoom >= 15 ? 3 : 2;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  if (state.layers.parks) {
+    for (const park of cov.parks) {
+      ctx.beginPath();
+      for (const ring of park.rings) {
+        ring.forEach((c, i) => {
+          const q = v.project(c.lat, c.lng);
+          if (i === 0) ctx.moveTo(q.x, q.y);
+          else ctx.lineTo(q.x, q.y);
+        });
+        ctx.closePath();
+      }
+      ctx.fillStyle = park.visited ? 'rgba(245, 158, 11, 0.22)' : 'rgba(56, 189, 248, 0.22)';
+      ctx.strokeStyle = park.visited ? 'rgba(245, 158, 11, 0.9)' : 'rgba(56, 189, 248, 0.9)';
+      ctx.lineWidth = 1.5;
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+  if (state.layers.streets) {
+    for (const pass of [false, true]) {
+      ctx.strokeStyle = pass ? '#f59e0b' : '#38bdf8';
+      ctx.lineWidth = lw;
+      ctx.beginPath();
+      for (const st of cov.streets) {
+        for (const run of st.runs) {
+          if (run.covered !== pass) continue;
+          run.coords.forEach((c, i) => {
+            const q = v.project(c.lat, c.lng);
+            if (i === 0) ctx.moveTo(q.x, q.y);
+            else ctx.lineTo(q.x, q.y);
+          });
+        }
+      }
+      ctx.stroke();
+    }
+  }
+}, { className: 'coverage-canvas' });
 
 const placesLayer = L.layerGroup().addTo(map);
+
+function applyLayerVisibility() {
+  const want = (on, layer) => {
+    if (on && !map.hasLayer(layer)) layer.addTo(map);
+    if (!on && map.hasLayer(layer)) map.removeLayer(layer);
+  };
+  const loaded = Boolean(state.data);
+  want(loaded && state.layers.fog, fogLayer);
+  want(loaded && (state.layers.streets || state.layers.parks), coverageLayer);
+  want(loaded && state.layers.heat, heat);
+  els.legendHeat.hidden = !state.layers.heat;
+  // keep places on top of the canvases
+  if (map.hasLayer(placesLayer)) {
+    map.removeLayer(placesLayer);
+    placesLayer.addTo(map);
+  }
+}
+
+/** Rebuild the "walked" point set, its fog index and coverage grid. */
+function rebuildWalked() {
+  if (!state.data) return;
+  const pts = pointsForMode(state.data.points, state.travel);
+  const agg = aggregateForHeat(pts, 20);
+  state.walked = { agg, index: new SpatialIndex(agg, 500), grid: new CoverageGrid(agg, { cellMeters: 20, reach: Math.max(25, state.reveal) }) };
+  fogLayer.redraw();
+  refreshCoverage();
+}
+
+// ---------- Streets and parks for the current view ----------
+function viewBox(pad = 0) {
+  const b = map.getBounds().pad(pad);
+  return { south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() };
+}
+
+function boxAreaKm2(b) {
+  const h = haversine(b.south, b.west, b.north, b.west);
+  const w = haversine(b.south, b.west, b.south, b.east);
+  return (h * w) / 1e6;
+}
+
+const contains = (outer, inner) =>
+  inner.south >= outer.south && inner.north <= outer.north && inner.west >= outer.west && inner.east <= outer.east;
+
+const intersects = (a, b) => !(a.east < b.west || a.west > b.east || a.north < b.south || a.south > b.north);
+
+function boxOfCoords(coords) {
+  let s = Infinity;
+  let n = -Infinity;
+  let w = Infinity;
+  let e = -Infinity;
+  for (const c of coords) {
+    if (c.lat < s) s = c.lat;
+    if (c.lat > n) n = c.lat;
+    if (c.lng < w) w = c.lng;
+    if (c.lng > e) e = c.lng;
+  }
+  return { south: s, west: w, north: n, east: e };
+}
+
+let coverageTimer = null;
+function scheduleCoverage() {
+  clearTimeout(coverageTimer);
+  coverageTimer = setTimeout(refreshCoverage, 500);
+}
+
+async function refreshCoverage() {
+  if (!state.data || !state.walked) return;
+  if (!state.layers.streets && !state.layers.parks) {
+    els.coverageStatus.textContent = '';
+    els.coverageStats.hidden = true;
+    return;
+  }
+  const view = viewBox();
+  const km2 = boxAreaKm2(view);
+  if (km2 > MAX_AREA_KM2) {
+    state.coverage = null;
+    coverageLayer.redraw();
+    setStatus(els.coverageStatus, 'Zoom in to see which streets and parks you have covered.');
+    els.coverageStats.hidden = true;
+    return;
+  }
+  const fetchBox = viewBox(0.25);
+  if (!state.area.boxes.some((b) => contains(b, view))) {
+    if (state.fetchingArea) return;
+    state.fetchingArea = true;
+    setStatus(els.coverageStatus, 'Loading streets and parks from OpenStreetMap…');
+    try {
+      const { ways, areas } = state.demo ? parseAreaElements(makeDemoArea(fetchBox).elements) : await fetchArea(fetchBox);
+      for (const w of ways) state.area.ways.set(w.id, { ...w, box: boxOfCoords(w.coords) });
+      for (const a of areas) state.area.areas.set(a.id, { ...a, box: boxOfCoords(a.rings.flat()) });
+      state.area.boxes.push(fetchBox);
+    } catch (err) {
+      setStatus(els.coverageStatus, `Could not load streets: ${err.message}. Pan a little to retry.`, true);
+      state.fetchingArea = false;
+      return;
+    }
+    state.fetchingArea = false;
+  }
+  drawCoverageForView(view);
+}
+
+function drawCoverageForView(view) {
+  const ways = [];
+  for (const w of state.area.ways.values()) if (intersects(w.box, view)) ways.push(w);
+  const areas = [];
+  for (const a of state.area.areas.values()) if (intersects(a.box, view)) areas.push(a);
+  const cov = computeCoverage(ways, areas, state.walked.grid);
+  state.coverage = cov;
+  coverageLayer.redraw();
+  const s = cov.stats;
+  const pct = s.totalMeters ? Math.round((100 * s.walkedMeters) / s.totalMeters) : 0;
+  const km = (m) => (m / 1000).toFixed(1);
+  const rows = [];
+  if (state.layers.streets) {
+    rows.push(['Streets walked', `${pct}%`], ['Distance', `${km(s.walkedMeters)} of ${km(s.totalMeters)} km`]);
+  }
+  if (state.layers.parks) rows.push(['Parks visited', `${s.visitedParks} of ${s.parks}`]);
+  els.coverageStats.innerHTML = rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('');
+  els.coverageStats.hidden = false;
+  els.coverageStats.classList.add('stats--tight');
+  setStatus(els.coverageStatus, ways.length || areas.length ? 'In the current view:' : 'No mapped streets or parks in view.');
+}
+
+map.on('moveend', scheduleCoverage);
 let pin = null;
 let circle = null;
 
@@ -114,12 +335,16 @@ function loadDocuments(docs, { demo = false } = {}) {
   els.legend.hidden = false;
 
   const hot = state.index.hotspot();
-  const bounds = L.latLngBounds(data.points.slice(0, 20000).map((p) => [p.lat, p.lng]));
-  map.fitBounds(bounds.pad(0.05));
   setCenter(L.latLng(hot.lat, hot.lng));
-  map.setView([hot.lat, hot.lng], 13);
+  map.setView([hot.lat, hot.lng], 15);
+
+  state.area = { ways: new Map(), areas: new Map(), boxes: [] };
+  state.coverage = null;
+  rebuildWalked();
+  applyLayerVisibility();
 
   renderStats(data);
+  els.layersCard.hidden = false;
   els.explore.hidden = false;
   els.resultsCard.hidden = true;
   state.places = [];
@@ -129,11 +354,15 @@ function loadDocuments(docs, { demo = false } = {}) {
 
 function renderStats(data) {
   const fmtDate = (t) => (t ? new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'short' }) : '–');
+  const modes = { foot: 0, bike: 0, vehicle: 0 };
+  for (const p of data.points) if (p.kind !== 'visit' && modes[p.mode] != null) modes[p.mode] += 1;
   const rows = [
     ['Points', data.meta.total.toLocaleString()],
     ['Visits', data.visits.length.toLocaleString()],
     ['From', fmtDate(data.meta.firstTime)],
     ['To', fmtDate(data.meta.lastTime)],
+    ['On foot', modes.foot.toLocaleString()],
+    ['Bike / vehicle', `${modes.bike.toLocaleString()} / ${modes.vehicle.toLocaleString()}`],
   ];
   els.stats.innerHTML = rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('');
   els.stats.hidden = false;
@@ -168,6 +397,29 @@ els.demo.addEventListener('click', () => {
   setStatus(els.status, 'Generating a year of pretend wandering…');
   setTimeout(() => loadDocuments([makeDemoTimeline()], { demo: true }), 20);
 });
+
+// ---------- Layer controls ----------
+els.travel.addEventListener('change', () => {
+  state.travel = els.travel.value;
+  rebuildWalked();
+});
+
+let revealTimer = null;
+els.reveal.addEventListener('input', () => {
+  state.reveal = Number(els.reveal.value);
+  els.revealOut.value = `${state.reveal} m`;
+  fogLayer.redraw();
+  clearTimeout(revealTimer);
+  revealTimer = setTimeout(rebuildWalked, 300);
+});
+
+for (const [key, el] of [['fog', els.layerFog], ['streets', els.layerStreets], ['parks', els.layerParks], ['heat', els.layerHeat]]) {
+  el.addEventListener('change', () => {
+    state.layers[key] = el.checked;
+    applyLayerVisibility();
+    if (key === 'streets' || key === 'parks') refreshCoverage();
+  });
+}
 
 // ---------- Explore controls ----------
 els.radius.addEventListener('input', () => {
@@ -311,4 +563,4 @@ function escapeHtml(s) {
 }
 
 // Expose a little for debugging and tests.
-window.__unexplored = { state, map, loadDocuments, haversine };
+window.__unexplored = { state, map, loadDocuments, haversine, refreshCoverage };

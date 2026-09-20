@@ -62,6 +62,26 @@ export class SpatialIndex {
     return res;
   }
 
+  /** Every point inside a lat/lng box. */
+  inBounds({ south, west, north, east }) {
+    const res = [];
+    const cellLng = this.cellLat / Math.max(0.05, Math.cos((((south + north) / 2) * Math.PI) / 180));
+    const i0 = Math.floor(south / this.cellLat) - 1;
+    const i1 = Math.floor(north / this.cellLat) + 1;
+    const j0 = Math.floor(west / cellLng) - 1;
+    const j1 = Math.floor(east / cellLng) + 1;
+    for (let i = i0; i <= i1; i++) {
+      for (let j = j0; j <= j1; j++) {
+        const bucket = this.cells.get(`${i}:${j}`);
+        if (!bucket) continue;
+        for (const p of bucket) {
+          if (p.lat >= south && p.lat <= north && p.lng >= west && p.lng <= east) res.push(p);
+        }
+      }
+    }
+    return res;
+  }
+
   /**
    * Familiarity: weight-sum of nearby points with a Gaussian falloff of
    * `sigma` metres. 1.0 ~ one hour spent exactly here.

@@ -16,6 +16,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 html, body { height: 100%; margin: 0; }
 
@@ -146,18 +147,28 @@ select {
 .badge--familiar { background: var(--accent); color: var(--accent-ink); }
 
 .map-wrap { position: relative; flex: 1; min-width: 0; }
-#map { position: absolute; inset: 0; background: #0b0e12; }
+#map { position: absolute; inset: 0; background: #e9ebef; }
 
 .legend {
   position: absolute; left: 12px; bottom: 24px; z-index: 500;
-  display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px;
-  padding: 8px 10px; border-radius: 8px;
-  background: rgba(22, 27, 34, 0.9); border: 1px solid var(--border); box-shadow: var(--shadow);
-  color: var(--ink-2);
+  display: flex; flex-wrap: wrap; gap: 4px 14px;
+  padding: 8px 12px; border-radius: 8px;
+  background: rgba(22, 27, 34, 0.92); border: 1px solid var(--border); box-shadow: var(--shadow);
+  color: var(--ink-2); font-size: 0.82rem;
 }
-.legend__ramp { grid-column: 1 / -1; height: 8px; border-radius: 4px;
-  background: linear-gradient(90deg, rgba(120, 53, 15, 0) 0%, #78350f 25%, #d97706 60%, #fbbf24 85%, #fff7d6 100%); }
-.legend__right { text-align: right; }
+.legend__item { display: inline-flex; align-items: center; gap: 6px; }
+.legend__line { display: inline-block; width: 22px; height: 3px; border-radius: 2px; }
+.legend__line--walked { background: var(--accent); }
+.legend__line--unwalked { background: var(--go); }
+.legend__fog { display: inline-block; width: 14px; height: 14px; border-radius: 3px; background: rgba(15, 18, 22, 0.55); border: 1px solid var(--border); }
+.legend__ramp { display: inline-block; width: 22px; height: 8px; border-radius: 4px;
+  background: linear-gradient(90deg, #78350f 0%, #d97706 50%, #fbbf24 80%, #fff7d6 100%); }
+
+.toggles { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.toggle { display: flex; align-items: center; gap: 8px; font-size: 0.9rem; cursor: pointer; }
+.toggle input { accent-color: var(--go); width: 16px; height: 16px; margin: 0; }
+.stats--tight { margin-top: 8px; padding-top: 8px; }
+.field select { width: 100%; }
 
 /* Leaflet dark theme tweaks */
 .leaflet-container { font: inherit; }

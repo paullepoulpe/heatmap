@@ -119,3 +119,46 @@ export function makeDemoPlaces({ lat, lng, radius, seed = 7 }) {
   }
   return { elements };
 }
+
+/** A fake street grid and a few parks for the area in view, shaped like Overpass `out geom`. */
+export function makeDemoArea(bbox, seed = 3) {
+  const rand = rng(seed);
+  const midLat = (bbox.south + bbox.north) / 2;
+  const mLat = 1 / 111320;
+  const mLng = 1 / (111320 * Math.cos((midLat * Math.PI) / 180));
+  const spacing = 140;
+  const elements = [];
+  let id = 1;
+  const snap = (v, step) => Math.floor(v / step) * step;
+  const latStart = snap(bbox.south, spacing * mLat);
+  const lngStart = snap(bbox.west, spacing * mLng);
+  const names = ['Rue des Lilas', 'Avenue Verte', 'Rue du Marché', 'Boulevard Nord', 'Impasse Bleue', 'Rue Haute'];
+  for (let lat = latStart; lat <= bbox.north; lat += spacing * mLat) {
+    const wobble = (rand() - 0.5) * 30 * mLat;
+    const geometry = [];
+    for (let lng = lngStart; lng <= bbox.east + spacing * mLng; lng += spacing * mLng) {
+      geometry.push({ lat: lat + wobble + Math.sin(lng * 4000) * 8 * mLat, lon: lng });
+    }
+    elements.push({ type: 'way', id: id++, tags: { highway: rand() < 0.3 ? 'footway' : 'residential', name: names[id % names.length] }, geometry });
+  }
+  for (let lng = lngStart; lng <= bbox.east; lng += spacing * mLng) {
+    const geometry = [];
+    for (let lat = latStart; lat <= bbox.north + spacing * mLat; lat += spacing * mLat) {
+      geometry.push({ lat, lon: lng + (rand() - 0.5) * 10 * mLng });
+    }
+    elements.push({ type: 'way', id: id++, tags: { highway: 'residential', name: names[id % names.length] }, geometry });
+  }
+  for (let k = 0; k < 6; k++) {
+    const cLat = bbox.south + rand() * (bbox.north - bbox.south);
+    const cLng = bbox.west + rand() * (bbox.east - bbox.west);
+    const r = 60 + rand() * 120;
+    const geometry = [];
+    for (let a = 0; a < 12; a++) {
+      const ang = (a / 12) * 2 * Math.PI;
+      geometry.push({ lat: cLat + Math.cos(ang) * r * mLat * (0.8 + rand() * 0.4), lon: cLng + Math.sin(ang) * r * mLng * (0.8 + rand() * 0.4) });
+    }
+    geometry.push(geometry[0]);
+    elements.push({ type: 'way', id: id++, tags: { leisure: 'park', name: `Parc ${k + 1}` }, geometry });
+  }
+  return { elements };
+}

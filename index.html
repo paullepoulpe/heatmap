@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Unexplored</title>
-  <meta name="description" content="A heatmap of everywhere you have been, and the places nearby you have not." />
+  <meta name="description" content="Every street you have walked and every park you have been to, drawn from your Google Timeline, and the ones you have not." />
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
   <link rel="stylesheet" href="css/style.css" />
 </head>
@@ -12,7 +12,7 @@
   <aside class="panel" id="panel">
     <header class="panel__head">
       <h1>Unexplored</h1>
-      <p class="muted">Your Google Timeline as a heatmap, and the places nearby you have never been.</p>
+      <p class="muted">Your Google Timeline on a map: the streets you have walked, the parks you have been to, and everything nearby you have not.</p>
     </header>
 
     <section class="card" id="import-card">
@@ -32,8 +32,32 @@
       <dl class="stats" id="stats" hidden></dl>
     </section>
 
+    <section class="card" id="layers-card" hidden>
+      <h2>2. What the map shows</h2>
+      <label class="field">
+        <span>Count as walked</span>
+        <select id="travel">
+          <option value="foot">On foot only</option>
+          <option value="bike">On foot or by bike</option>
+          <option value="any">Any travel, driving too</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Reveal radius <output id="reveal-out">40 m</output></span>
+        <input id="reveal" type="range" min="15" max="150" step="5" value="40" />
+      </label>
+      <div class="toggles">
+        <label class="toggle"><input type="checkbox" id="layer-fog" checked /> Fog over ground you have not covered</label>
+        <label class="toggle"><input type="checkbox" id="layer-streets" checked /> Streets: walked vs not walked</label>
+        <label class="toggle"><input type="checkbox" id="layer-parks" checked /> Parks: visited vs not visited</label>
+        <label class="toggle"><input type="checkbox" id="layer-heat" /> Heatmap of time spent</label>
+      </div>
+      <p class="status" id="coverage-status" aria-live="polite"></p>
+      <dl class="stats" id="coverage-stats" hidden></dl>
+    </section>
+
     <section class="card" id="explore-card" hidden>
-      <h2>2. Explore around a point</h2>
+      <h2>3. Explore around a point</h2>
       <div class="row">
         <button class="btn btn--ghost" id="locate-btn" type="button">Use my location</button>
         <span class="muted small">or drag the pin / click the map</span>
@@ -52,7 +76,7 @@
 
     <section class="card" id="results-card" hidden>
       <div class="results-head">
-        <h2>3. Places to try</h2>
+        <h2>4. Places to try</h2>
         <label class="field field--inline">
           <span class="muted small">Sort</span>
           <select id="sort">
@@ -75,8 +99,10 @@
   <main class="map-wrap">
     <div id="map" role="application" aria-label="Map"></div>
     <div class="legend" id="legend" hidden>
-      <span class="legend__ramp" aria-hidden="true"></span>
-      <span class="small">rarely here</span><span class="small legend__right">often here</span>
+      <span class="legend__item"><i class="legend__line legend__line--walked"></i>walked</span>
+      <span class="legend__item"><i class="legend__line legend__line--unwalked"></i>not yet</span>
+      <span class="legend__item"><i class="legend__fog"></i>never been</span>
+      <span class="legend__item" id="legend-heat" hidden><i class="legend__ramp"></i>time spent</span>
     </div>
   </main>
 
