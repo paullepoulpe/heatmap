@@ -1,5 +1,9 @@
 // A Leaflet layer backed by one canvas that a draw callback repaints on move/zoom.
 // Used for the fog and the street coverage, which are far too many shapes for SVG.
+//
+// Follows the same event dance as Leaflet's own L.Canvas renderer: while a zoom
+// is in progress (pinch, wheel or button) the existing picture is scaled with a
+// CSS transform so it tracks the map, and it is repainted once the gesture ends.
 
 export function createCanvasLayer(draw, { pane = 'overlayPane', padding = 0.5, className = '' } = {}) {
   const Layer = L.Layer.extend({
@@ -7,46 +11,73 @@ export function createCanvasLayer(draw, { pane = 'overlayPane', padding = 0.5, c
       this._map = map;
       this._canvas = L.DomUtil.create('canvas', `leaflet-layer ${className}`);
       this._canvas.style.pointerEvents = 'none';
+      L.DomUtil.addClass(this._canvas, `leaflet-zoom-${this._zoomAnimated ? 'animated' : 'hide'}`);
       map.getPane(pane).appendChild(this._canvas);
-      map.on('moveend zoomend resize', this._reset, this);
-      map.on('zoomanim', this._onZoomAnim, this);
-      this._reset();
+      this._update();
     },
-    onRemove(map) {
-      map.off('moveend zoomend resize', this._reset, this);
-      map.off('zoomanim', this._onZoomAnim, this);
+    onRemove() {
       this._canvas.remove();
     },
+    getEvents() {
+      const events = {
+        viewreset: this._reset,
+        zoom: this._onZoom,
+        moveend: this._update,
+        resize: this._update,
+      };
+      if (this._zoomAnimated) events.zoomanim = this._onAnimZoom;
+      return events;
+    },
     redraw() {
-      if (this._map) this._reset();
+      if (this._map) this._update();
       return this;
     },
-    _onZoomAnim(e) {
-      // scale the old picture during the zoom animation, like Leaflet's own canvas renderer
-      const scale = this._map.getZoomScale(e.zoom, this._zoom);
-      const offset = this._map._latLngBoundsToNewLayerBounds(this._bounds, e.zoom, e.center).min;
-      L.DomUtil.setTransform(this._canvas, offset, scale);
+    _onAnimZoom(ev) {
+      this._updateTransform(ev.center, ev.zoom);
+    },
+    _onZoom() {
+      this._updateTransform(this._map.getCenter(), this._map.getZoom());
     },
     _reset() {
+      this._update();
+      this._updateTransform(this._center, this._zoom);
+    },
+    /** Scale and shift the last painted picture so it follows an in-progress zoom. */
+    _updateTransform(center, zoom) {
       const map = this._map;
+      if (!this._center) return;
+      const scale = map.getZoomScale(zoom, this._zoom);
+      const viewHalf = map.getSize().multiplyBy(0.5 + padding);
+      const currentCenterPoint = map.project(this._center, zoom);
+      const topLeftOffset = viewHalf.multiplyBy(-scale).add(currentCenterPoint).subtract(map._getNewPixelOrigin(center, zoom));
+      if (L.Browser.any3d) L.DomUtil.setTransform(this._canvas, topLeftOffset, scale);
+      else L.DomUtil.setPosition(this._canvas, topLeftOffset);
+    },
+    /** Full repaint for the current view (plus padding on every side). */
+    _update() {
+      const map = this._map;
+      if (!map || (map._animatingZoom && this._bounds)) return;
       const size = map.getSize();
-      const pad = size.multiplyBy(padding);
-      const min = map.containerPointToLayerPoint(pad.multiplyBy(-1));
-      const full = size.multiplyBy(1 + padding * 2);
-      const ratio = window.devicePixelRatio || 1;
+      const min = map.containerPointToLayerPoint(size.multiplyBy(-padding)).round();
+      this._bounds = new L.Bounds(min, min.add(size.multiplyBy(1 + padding * 2)).round());
+      this._center = map.getCenter();
       this._zoom = map.getZoom();
-      this._bounds = L.latLngBounds(map.layerPointToLatLng(min), map.layerPointToLatLng(min.add(full)));
-      L.DomUtil.setTransform(this._canvas, min, 1);
-      this._canvas.width = Math.round(full.x * ratio);
-      this._canvas.height = Math.round(full.y * ratio);
-      this._canvas.style.width = `${full.x}px`;
-      this._canvas.style.height = `${full.y}px`;
-      const ctx = this._canvas.getContext('2d');
+
+      const full = this._bounds.getSize();
+      const ratio = window.devicePixelRatio || 1;
+      const canvas = this._canvas;
+      L.DomUtil.setPosition(canvas, min);
+      canvas.width = Math.round(full.x * ratio);
+      canvas.height = Math.round(full.y * ratio);
+      canvas.style.width = `${full.x}px`;
+      canvas.style.height = `${full.y}px`;
+
+      const ctx = canvas.getContext('2d');
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
       ctx.clearRect(0, 0, full.x, full.y);
-      const origin = min;
-      const project = (lat, lng) => map.latLngToLayerPoint([lat, lng]).subtract(origin);
-      draw(ctx, { map, project, width: full.x, height: full.y, bounds: this._bounds, zoom: this._zoom });
+      const project = (lat, lng) => map.latLngToLayerPoint([lat, lng]).subtract(min);
+      const bounds = L.latLngBounds(map.layerPointToLatLng(min), map.layerPointToLatLng(this._bounds.max));
+      draw(ctx, { map, project, width: full.x, height: full.y, bounds, zoom: this._zoom });
     },
   });
   return new Layer();
