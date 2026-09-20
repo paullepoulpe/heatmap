@@ -5,7 +5,7 @@ import { CoverageGrid, computeCoverage, pointsForMode } from './coverage.js';
 import { createCanvasLayer, metersPerPixel } from './canvas-layer.js';
 import { saveHistory, loadHistory, clearHistory, loadSettings, saveSettings } from './storage.js';
 import { makeDemoTimeline, makeDemoPlaces, makeDemoArea } from './demo.js';
-import { tilesForBox } from './tiles.js';
+import { tilesForBox, countTilesForBox } from './tiles.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -458,8 +458,7 @@ function refreshCoverage() {
     return;
   }
   const drawBox = viewBox(CANVAS_PAD); // matches the canvas padding
-  const tiles = tilesForBox(drawBox, TILE_Z);
-  if (tiles.length > MAX_TILES) {
+  if (countTilesForBox(drawBox, TILE_Z) > MAX_TILES) {
     state.coverage = null;
     coverageLayer.redraw();
     setStatus(els.coverageStatus, 'Zoom in to see which streets and parks you have covered.');
@@ -467,6 +466,7 @@ function refreshCoverage() {
     setPill('Zoom in for streets');
     return;
   }
+  const tiles = tilesForBox(drawBox, TILE_Z);
   const missing = tiles.filter((t) => {
     const st = state.area.tiles.get(t.key);
     return !st || (st.status === 'error' && Date.now() - st.at > 15000);
@@ -523,6 +523,7 @@ function drawCoverageForView() {
   if (!state.walked) return;
   const drawBox = viewBox(CANVAS_PAD);
   const view = viewBox();
+  if (countTilesForBox(drawBox, TILE_Z) > MAX_TILES) return; // zoomed out meanwhile: nothing to draw
   const streets = [];
   const parks = [];
   let walked = 0;

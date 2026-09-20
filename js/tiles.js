@@ -3,13 +3,17 @@
 
 const DEG = Math.PI / 180;
 
+const MAX_LAT = 85.0511; // web mercator's edge
+
+const clampIndex = (i, z) => Math.min(2 ** z - 1, Math.max(0, i));
+
 export function lngToX(lng, z) {
-  return Math.floor(((lng + 180) / 360) * 2 ** z);
+  return clampIndex(Math.floor(((lng + 180) / 360) * 2 ** z), z);
 }
 
 export function latToY(lat, z) {
-  const r = lat * DEG;
-  return Math.floor(((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * 2 ** z);
+  const r = Math.max(-MAX_LAT, Math.min(MAX_LAT, lat)) * DEG;
+  return clampIndex(Math.floor(((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * 2 ** z), z);
 }
 
 function xToLng(x, z) {
@@ -30,7 +34,14 @@ export function tileBounds(x, y, z) {
   return { west: xToLng(x, z), east: xToLng(x + 1, z), north: yToLat(y, z), south: yToLat(y + 1, z) };
 }
 
-/** Every tile at zoom z that touches a lat/lng box. */
+/** How many tiles at zoom z touch a box, without building them: zoomed out that is millions. */
+export function countTilesForBox(box, z) {
+  const w = lngToX(box.east, z) - lngToX(box.west, z) + 1;
+  const h = latToY(box.south, z) - latToY(box.north, z) + 1;
+  return w * h;
+}
+
+/** Every tile at zoom z that touches a lat/lng box. Check countTilesForBox first. */
 export function tilesForBox(box, z) {
   const x0 = lngToX(box.west, z);
   const x1 = lngToX(box.east, z);
