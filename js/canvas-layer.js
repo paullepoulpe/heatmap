@@ -5,7 +5,9 @@
 // is in progress (pinch, wheel or button) the existing picture is scaled with a
 // CSS transform so it tracks the map, and it is repainted once the gesture ends.
 
-export function createCanvasLayer(draw, { pane = 'overlayPane', padding = 0.5, className = '' } = {}) {
+const MAX_RATIO = 2; // 3x phones get a 2x overlay: half the pixels, no visible difference under blur/lines
+
+export function createCanvasLayer(draw, { pane = 'overlayPane', padding = 0.25, className = '' } = {}) {
   const Layer = L.Layer.extend({
     onAdd(map) {
       this._map = map;
@@ -64,7 +66,7 @@ export function createCanvasLayer(draw, { pane = 'overlayPane', padding = 0.5, c
       this._zoom = map.getZoom();
 
       const full = this._bounds.getSize();
-      const ratio = window.devicePixelRatio || 1;
+      const ratio = Math.min(MAX_RATIO, window.devicePixelRatio || 1);
       const canvas = this._canvas;
       L.DomUtil.setPosition(canvas, min);
       canvas.width = Math.round(full.x * ratio);

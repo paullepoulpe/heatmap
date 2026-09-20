@@ -22,6 +22,9 @@
 [hidden] { display: none !important; }
 
 html, body { height: 100%; margin: 0; overflow: hidden; }
+/* pan and scroll only: never let the browser pinch-zoom the page itself */
+body { touch-action: pan-x pan-y; }
+.leaflet-container { touch-action: none; }
 
 body {
   background: var(--bg);
@@ -48,8 +51,7 @@ p { margin: 0 0 8px; }
 .toolbar {
   display: flex; align-items: center; gap: 6px;
   padding: 6px; border-radius: 999px;
-  background: rgba(22, 27, 34, 0.94); border: 1px solid var(--border); box-shadow: var(--shadow);
-  backdrop-filter: blur(8px);
+  background: var(--panel); border: 1px solid var(--border); box-shadow: var(--shadow);
 }
 .brand { font-weight: 700; letter-spacing: 0.01em; padding: 0 8px 0 10px; }
 
@@ -66,9 +68,8 @@ p { margin: 0 0 8px; }
 .pill {
   appearance: none; cursor: pointer; font: inherit;
   padding: 6px 12px; border-radius: 999px;
-  background: rgba(22, 27, 34, 0.94); border: 1px solid var(--border); box-shadow: var(--shadow);
+  background: var(--panel); border: 1px solid var(--border); box-shadow: var(--shadow);
   color: var(--ink); font-size: 0.85rem; font-variant-numeric: tabular-nums;
-  backdrop-filter: blur(8px);
 }
 .pill b { color: var(--accent); }
 .pill .sep { color: var(--ink-3); padding: 0 6px; }
@@ -77,7 +78,7 @@ p { margin: 0 0 8px; }
   position: fixed; left: var(--gutter); bottom: calc(var(--gutter) + var(--safe-bottom)); z-index: 850;
   display: flex; flex-wrap: wrap; gap: 4px 14px;
   padding: 8px 12px; border-radius: 10px;
-  background: rgba(22, 27, 34, 0.92); border: 1px solid var(--border); box-shadow: var(--shadow);
+  background: var(--panel); border: 1px solid var(--border); box-shadow: var(--shadow);
   color: var(--ink-2); font-size: 0.82rem;
 }
 .legend__item { display: inline-flex; align-items: center; gap: 6px; }
@@ -108,7 +109,7 @@ p { margin: 0 0 8px; }
   display: flex; align-items: center; justify-content: space-between;
   padding: 12px 14px; border-bottom: 1px solid var(--border);
 }
-.panel__body { padding: 14px; overflow-y: auto; overscroll-behavior: contain; }
+.panel__body { padding: 14px; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; }
 .close {
   appearance: none; border: 0; background: transparent; color: var(--ink-2);
   font-size: 22px; line-height: 1; cursor: pointer; padding: 2px 6px; border-radius: 6px;

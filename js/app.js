@@ -67,6 +67,7 @@ const state = {
   coverage: null,
 };
 
+const CANVAS_PAD = 0.25; // overlay canvases extend this fraction of the viewport beyond each edge
 const TILE_Z = 13; // ~3.2 km square at mid latitudes: a few thousand ways per tile in a dense city
 const MAX_TILES = 12; // beyond this many tiles under the canvas we ask to zoom in
 const MAX_INFLIGHT = 2; // public Overpass servers allow few parallel requests per client
@@ -100,6 +101,11 @@ for (const btn of document.querySelectorAll('[data-close]')) btn.addEventListene
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') openPanel(null);
 });
+// iOS Safari ignores user-scalable=no; these stop it zooming the page when a pinch starts on the chrome.
+document.addEventListener('gesturestart', (e) => e.preventDefault(), { passive: false });
+document.addEventListener('touchmove', (e) => {
+  if (e.touches.length > 1 && !e.target.closest('.leaflet-container')) e.preventDefault();
+}, { passive: false });
 
 // ---------- Map ----------
 const map = L.map('map', { zoomControl: false, worldCopyJump: true });
@@ -451,7 +457,7 @@ function refreshCoverage() {
     els.coveragePill.hidden = true;
     return;
   }
-  const drawBox = viewBox(0.5); // matches the canvas padding
+  const drawBox = viewBox(CANVAS_PAD); // matches the canvas padding
   const tiles = tilesForBox(drawBox, TILE_Z);
   if (tiles.length > MAX_TILES) {
     state.coverage = null;
@@ -515,7 +521,7 @@ function runsFor(way) {
 /** Draw everything under the padded canvas; report stats for what is actually visible. */
 function drawCoverageForView() {
   if (!state.walked) return;
-  const drawBox = viewBox(0.5);
+  const drawBox = viewBox(CANVAS_PAD);
   const view = viewBox();
   const streets = [];
   const parks = [];
