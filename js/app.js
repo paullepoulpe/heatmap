@@ -1,11 +1,12 @@
 import { parseDocuments } from './parse.js';
-import { SpatialIndex, LEVELS, scorePlaces, aggregateForHeat, haversine } from './score.js';
+import { SpatialIndex, LEVELS, classify, scorePlaces, aggregateForHeat, haversine } from './score.js';
 import { CATEGORIES, fetchPlaces, elementToPlace, dedupePlaces, fetchArea, parseAreaElements } from './places.js';
 import { CoverageGrid, computeCoverage, pointsForMode } from './coverage.js';
 import { createCanvasLayer, metersPerPixel } from './canvas-layer.js';
 import { saveHistory, loadHistory, clearHistory, loadSettings, saveSettings } from './storage.js';
 import { makeDemoTimeline, makeDemoPlaces, makeDemoArea } from './demo.js';
 import { tilesForBox, countTilesForBox } from './tiles.js';
+import { navigationLinks, detectPlatform, formatCoords, coordPair } from './navigate.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -252,6 +253,7 @@ function setCenter(latlng, { pan = false } = {}) {
 }
 
 map.on('click', (e) => {
+  if (Date.now() < suppressClickUntil) return;
   if (!state.data) return;
   if (!panels.explore.hidden || window.innerWidth > 640) setCenter(e.latlng);
   if (window.innerWidth <= 640) openPanel(null);
@@ -266,6 +268,123 @@ map.on('moveend', () => {
   }, 400);
   scheduleCoverage();
 });
+
+// ---------- Long-press / right-click: what can I do with this spot? ----------
+const PLATFORM = detectPlatform(navigator.userAgent, navigator.platform, navigator.maxTouchPoints);
+const LONG_PRESS_MS = 500;
+const MOVE_TOLERANCE = 12; // px of finger drift still counted as a press
+const mapEl = map.getContainer();
+
+let pressTimer = null;
+let pressStart = null;
+let suppressClickUntil = 0;
+let lastMenuAt = 0;
+
+function cancelPress() {
+  clearTimeout(pressTimer);
+  pressTimer = null;
+  pressStart = null;
+}
+
+function latLngFromClient(x, y) {
+  const rect = mapEl.getBoundingClientRect();
+  return map.containerPointToLatLng(L.point(x - rect.left, y - rect.top));
+}
+
+mapEl.addEventListener('touchstart', (e) => {
+  if (e.touches.length !== 1) return cancelPress();
+  const t = e.touches[0];
+  pressStart = { x: t.clientX, y: t.clientY };
+  clearTimeout(pressTimer);
+  pressTimer = setTimeout(() => {
+    pressTimer = null;
+    const at = pressStart;
+    cancelPress();
+    if (!at) return;
+    suppressClickUntil = Date.now() + 800; // the touchend still fires a map click
+    if (navigator.vibrate) navigator.vibrate(12);
+    openHereMenu(latLngFromClient(at.x, at.y));
+  }, LONG_PRESS_MS);
+}, { passive: true });
+
+mapEl.addEventListener('touchmove', (e) => {
+  if (!pressStart || !e.touches.length) return;
+  const t = e.touches[0];
+  if (Math.hypot(t.clientX - pressStart.x, t.clientY - pressStart.y) > MOVE_TOLERANCE) cancelPress();
+}, { passive: true });
+
+for (const ev of ['touchend', 'touchcancel']) mapEl.addEventListener(ev, cancelPress, { passive: true });
+
+// Desktop right-click, and Android Chrome's own long-press event.
+map.on('contextmenu', (e) => openHereMenu(e.latlng));
+
+function openHereMenu(latlng) {
+  const now = Date.now();
+  if (now - lastMenuAt < 400) return; // Android fires its own contextmenu next to our timer
+  lastMenuAt = now;
+
+  const { lat, lng } = latlng;
+  const el = document.createElement('div');
+  el.className = 'here';
+
+  const head = document.createElement('div');
+  head.className = 'here__head';
+  head.textContent = formatCoords(lat, lng);
+  el.appendChild(head);
+
+  if (state.index) {
+    const level = classify(state.index.familiarity(lat, lng));
+    const note = document.createElement('div');
+    note.className = `here__level here__level--${level}`;
+    note.textContent = { unexplored: 'You have never been here', passed: 'You have passed by here', familiar: 'You know this spot' }[level];
+    el.appendChild(note);
+  }
+
+  for (const link of navigationLinks(lat, lng, PLATFORM)) {
+    const a = document.createElement('a');
+    a.className = 'here__action';
+    a.href = link.href;
+    a.textContent = link.label;
+    if (link.external) {
+      a.target = '_blank';
+      a.rel = 'noopener';
+    }
+    el.appendChild(a);
+  }
+
+  if (state.data) {
+    const explore = document.createElement('button');
+    explore.type = 'button';
+    explore.className = 'here__action';
+    explore.textContent = 'Explore around here';
+    explore.addEventListener('click', () => {
+      setCenter(latlng);
+      map.closePopup();
+      openPanel('explore');
+    });
+    el.appendChild(explore);
+  }
+
+  const copy = document.createElement('button');
+  copy.type = 'button';
+  copy.className = 'here__action';
+  copy.textContent = 'Copy coordinates';
+  copy.addEventListener('click', async () => {
+    const text = coordPair(lat, lng);
+    try {
+      await navigator.clipboard.writeText(text);
+      copy.textContent = 'Copied';
+    } catch {
+      copy.textContent = text; // clipboard blocked: at least show it to select by hand
+    }
+  });
+  el.appendChild(copy);
+
+  L.popup({ className: 'here-popup', closeButton: true, autoPan: true, offset: [0, -2] })
+    .setLatLng(latlng)
+    .setContent(el)
+    .openOn(map);
+}
 
 // ---------- Import & persistence ----------
 function setStatus(el, msg, isError = false) {

@@ -24,7 +24,7 @@
 html, body { height: 100%; margin: 0; overflow: hidden; }
 /* pan and scroll only: never let the browser pinch-zoom the page itself */
 body { touch-action: pan-x pan-y; }
-.leaflet-container { touch-action: none; }
+.leaflet-container { touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 
 body {
   background: var(--bg);
@@ -196,6 +196,22 @@ select {
 .badge--unexplored { background: var(--go); color: var(--go-ink); }
 .badge--passed { background: #3b4657; color: var(--ink); }
 .badge--familiar { background: var(--accent); color: var(--accent-ink); }
+
+.here { display: flex; flex-direction: column; gap: 2px; min-width: 190px; }
+.here__head { font-weight: 600; font-variant-numeric: tabular-nums; }
+.here__level { font-size: 0.82rem; margin-bottom: 6px; }
+.here__level--unexplored { color: var(--go); }
+.here__level--passed { color: var(--ink-2); }
+.here__level--familiar { color: var(--accent); }
+/* the extra class outranks leaflet.css's own `.leaflet-container a` colour */
+.here .here__action {
+  appearance: none; border: 0; background: transparent; cursor: pointer;
+  font: inherit; color: var(--ink); text-align: left; text-decoration: none;
+  padding: 8px 10px; margin: 0 -10px; border-radius: 8px;
+}
+.here .here__action:hover { background: var(--panel); }
+.here-popup .leaflet-popup-content { margin: 12px 16px 10px 14px; }
+.here-popup .leaflet-popup-content-wrapper { border: 1px solid var(--border); }
 
 /* Leaflet dark chrome */
 .leaflet-container { font: inherit; }

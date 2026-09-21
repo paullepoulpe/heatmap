@@ -12,6 +12,8 @@ Load your Timeline export and the map turns into a fog-of-war view of your life:
 - **Places to try**: drop a pin, pick a radius and categories, and named places from
   OpenStreetMap are ranked by how unfamiliar they are to you.
 - An optional **heatmap** of time spent, for the big picture.
+- **Long-press anywhere** (right-click on a desktop) for walking directions to that exact spot in
+  Google Maps, the platform's own map app, or to drop the explore pin there.
 
 The map fills the screen; three floating buttons open the import, layer and places panels.
 Once imported, your history is saved in the browser's IndexedDB (localStorage is far too small
@@ -99,6 +101,7 @@ js/coverage.js  "been here" grid, street sampling, park point-in-polygon
 js/places.js    Overpass queries (places, streets, parks) with endpoint fallback
 js/canvas-layer.js  one-canvas Leaflet layer used for the fog and the coverage
 js/tiles.js     web-mercator tile maths for the street cache
+js/navigate.js  map-app URLs and platform detection for the long-press menu
 js/storage.js   IndexedDB history store (packed typed arrays) and localStorage settings
 js/demo.js      synthetic history + places for "Try with demo data"
 js/app.js       UI and Leaflet wiring
